@@ -47,7 +47,7 @@ export function SessionsScreen({ sessions, selectedIndex, replayMode, customProm
       <Box marginTop={1} flexDirection="row">
         {columns.map((col, idx) => (
           <Box key={idx} width={col.width} marginRight={idx < columns.length - 1 ? 1 : 0}>
-            <Text bold underline color="blue">{fitText(col.label, col.width)}</Text>
+            <Text bold color="blue">{fitText(col.label, col.width)}</Text>
           </Box>
         ))}
       </Box>
