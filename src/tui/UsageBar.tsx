@@ -26,7 +26,7 @@ export function UsageBar({ percent, width }: Props) {
   const label = ` ${String(percent).padStart(3)}%`;
   return (
     <>
-      <Text color={color}>{"█".repeat(filled)}</Text>
+      <Text color={color}>{"▇".repeat(filled)}</Text>
       <Text color="gray">{"░".repeat(empty)}</Text>
       <Text color={color}>{label}</Text>
     </>
