@@ -2,7 +2,8 @@ import { Box, Text } from "ink";
 
 import type { AppStateData } from "../../core/state.js";
 import type { AccountView } from "../useConfigState.js";
-import { fitText, formatIsoLocal, formatUpdatedAt, usageBar } from "../format.js";
+import { fitText, formatIsoLocal, formatUpdatedAt } from "../format.js";
+import { UsageBar } from "../UsageBar.js";
 
 interface Props {
   accounts: AccountView[];
@@ -104,9 +105,16 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
           const isSelected = idx === selectedIndex;
           const isActive = state.active_account === view.account.name;
           const color = !view.loggedIn ? "red" : isSelected ? "cyan" : "green";
-          const fiveBar = usageBar(view.usage.five_hour_pct, 8);
-          const sevenBar = usageBar(view.usage.seven_day_pct, 8);
-          const usageText = view.loggedIn ? `5h ${fiveBar}  7d ${sevenBar}` : "login needed";
+          const usageCell = view.loggedIn ? (
+            <Text>
+              <Text color="gray">5h </Text>
+              <UsageBar percent={view.usage.five_hour_pct} width={6} />
+              <Text color="gray">  7d </Text>
+              <UsageBar percent={view.usage.seven_day_pct} width={6} />
+            </Text>
+          ) : (
+            <Text color="red">login needed</Text>
+          );
           const cells = [
             <Text key="bar" color="magenta" bold>{isSelected ? "▌" : " "}</Text>,
             <Text key="no" color={color} bold={isSelected}>{fitText(String(idx + 1), columns[1]!.width)}</Text>,
@@ -115,7 +123,7 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
             <Text key="name" color={color} bold={isSelected}>{fitText(view.account.name, columns[4]!.width)}</Text>,
             <Text key="auth" color={color} bold={isSelected}>{fitText(view.loggedIn ? "Y" : "N", columns[5]!.width)}</Text>,
             <Text key="plan" color={color} bold={isSelected}>{fitText(view.subscriptionType ?? "-", columns[6]!.width)}</Text>,
-            <Text key="usg" color={color} bold={isSelected}>{fitText(usageText, columns[7]!.width)}</Text>,
+            usageCell,
           ];
           return <Row key={view.account.name} cells={cells} columns={columns} selected={isSelected} />;
         })
@@ -140,17 +148,15 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
               Math.max(1, width - 2),
             )}
           </Text>
-          <Text color="gray">
-            {fitText(
-              `5h usage: ${usageBar(selected.usage.five_hour_pct, 16)}   Reset: ${formatIsoLocal(selected.usage.five_hour_reset_at)}`,
-              Math.max(1, width - 2),
-            )}
+          <Text>
+            <Text color="gray">5h usage: </Text>
+            <UsageBar percent={selected.usage.five_hour_pct} width={16} />
+            <Text color="gray">   Reset: {formatIsoLocal(selected.usage.five_hour_reset_at)}</Text>
           </Text>
-          <Text color="gray">
-            {fitText(
-              `7d usage: ${usageBar(selected.usage.seven_day_pct, 16)}   Reset: ${formatIsoLocal(selected.usage.seven_day_reset_at)}`,
-              Math.max(1, width - 2),
-            )}
+          <Text>
+            <Text color="gray">7d usage: </Text>
+            <UsageBar percent={selected.usage.seven_day_pct} width={16} />
+            <Text color="gray">   Reset: {formatIsoLocal(selected.usage.seven_day_reset_at)}</Text>
           </Text>
           <Text color="gray">
             {fitText(`Updated: ${formatUpdatedAt(selected.usage.cache_timestamp_ms)}`, Math.max(1, width - 2))}

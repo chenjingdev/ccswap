@@ -5,15 +5,6 @@ export function fitText(value: string, width: number): string {
   return value.slice(0, width - 1) + "…";
 }
 
-export function usageBar(percent: number | null, width: number): string {
-  if (percent === null) {
-    return "[" + "-".repeat(width) + "] --";
-  }
-  const filled = Math.max(0, Math.min(width, Math.round((percent / 100) * width)));
-  const bar = "#".repeat(filled) + "-".repeat(width - filled);
-  return `[${bar}] ${String(percent).padStart(3)}%`;
-}
-
 export function replayLabel(mode: string): string {
   switch (mode) {
     case "last_prompt":
