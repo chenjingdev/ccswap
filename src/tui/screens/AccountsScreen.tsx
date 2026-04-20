@@ -73,8 +73,13 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
           const activeIcon = isActive ? "★" : "·";
           const activeColor = isActive ? "yellow" : "gray";
 
+          const isLast = idx === accounts.length - 1;
           return (
-            <Box key={view.account.name} flexDirection="row">
+            <Box
+              key={view.account.name}
+              flexDirection="row"
+              marginBottom={isLast ? 0 : 1}
+            >
               <Box width={columns[0]!.width} marginRight={1}>
                 <Text color={markerColor} bold>{marker}</Text>
               </Box>
