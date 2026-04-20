@@ -1,159 +1,128 @@
 # ccswap
 
-`ccswap` is a small dashboard/TUI for Claude Code multi-account workflows.
+Multi-account Claude Code switcher with auto-swap on limit.
 
-It manages multiple Claude subscription accounts by saving one real
-`claude auth login` session per account, then runs Claude through an auto-swap
-wrapper that can move to the next account when the current one hits a limit.
+`ccswap` manages multiple Claude subscription logins, wraps `claude` in a PTY,
+watches for "limit reached" style messages, and rotates to the next healthy
+account automatically — resuming the same Claude session with your last prompt.
 
-## What It Does
+## Status
 
-- open a TUI dashboard with `ccswap`
-- register 2, 3, 4, or more Claude accounts
-- save one Claude login per account
-- show per-account auth/subscription status
-- mark one account as active
-- manually switch active accounts
-- auto-swap to the next healthy account on limit / 429 style errors
+Rewritten in TypeScript + Ink. Cross-platform: macOS, Linux, Windows (native).
 
-## Install The Command
+The original Python implementation (`ccswap.py`, `ccswap_runtime.py`,
+`ccswap_usage.py`) still lives in this directory for reference but is not what
+the `ccswap` command invokes after this rewrite.
 
-The workspace includes:
+## Requirements
 
-- `/Users/chenjing/dev/ccswap/ccswap.py`
+- Node.js ≥ 20
+- `claude` on PATH (installed natively or via `npm i -g @anthropic-ai/claude-code`)
 
-If you want the bare `ccswap` command globally, symlink it into your PATH:
+## Install (development)
 
-```bash
-ln -sf /Users/chenjing/dev/ccswap/ccswap.py ~/.local/bin/ccswap
-chmod +x /Users/chenjing/dev/ccswap/ccswap.py
+```sh
+pnpm install
+pnpm build
+# link globally for ad-hoc use:
+npm link
 ```
 
-## First Run
+## CLI
 
-Open the dashboard:
-
-```bash
-ccswap
+```sh
+ccswap                       # open the TUI dashboard
+ccswap init                  # create ~/.config/ccswap
+ccswap account add <name>    # add an account row
+ccswap account list
+ccswap account rename <old> <new>
+ccswap account remove <name>
+ccswap login <name>          # run `claude auth login` and save the login
+ccswap use <name>            # set active account
+ccswap run -- <claude-args>  # run claude through ccswap with auto-swap
+ccswap claude <claude-args>  # shorthand for the above
 ```
 
-Inside the dashboard:
+## Dashboard keys
 
-- `a` adds an account row
-- `l` launches `claude auth login` for the selected account and saves that login
-- `r` renames the selected account
-- `Enter` makes the selected account active
-- `space` includes or excludes the selected account from auto-swap
-- `Tab` switches between the Accounts and Sessions screens
+### Accounts screen
+- `j` / `k` / arrows — move selection
+- `Enter` — set active account
+- `a` — add account (modal)
+- `r` — rename selected account
+- `d` — delete selected account
+- `l` — run `claude auth login` for selected account
+- `Space` — toggle auto-swap for selected account
+- `Tab` — switch to Sessions
+- `q` / `Ctrl-C` — quit
 
-## CLI Flow
+### Sessions screen
+- `j` / `k` / arrows — move selection
+- `m` — cycle replay mode (last prompt / continue / custom)
+- `p` — set custom replay prompt
+- `Tab` — switch to Accounts
 
-If you want to manage things outside the dashboard:
+## How it works
 
-```bash
-ccswap init
-ccswap account add work
-ccswap account add personal
-ccswap account rename personal side
-ccswap login work
-ccswap login personal
-ccswap use work
-ccswap run
+Each account owns its own `CLAUDE_CONFIG_DIR` under
+`~/.config/ccswap/accounts/<name>/claude`. The saved Claude login is kept in
+the OS credential store via `@napi-rs/keyring`:
+
+- macOS → Keychain
+- Linux → Secret Service (libsecret)
+- Windows → Credential Manager
+
+When `ccswap claude` spawns `claude`, it injects a `--settings` file that
+registers `SessionStart` and `UserPromptSubmit` hooks. Those hooks call back
+into `ccswap hook ...` to record the Claude session id and the last submitted
+prompt. Output is scanned for limit patterns in real time.
+
+When a limit is confirmed:
+
+1. Current account is marked attempted
+2. Next eligible account (auto-swap on, not attempted) is picked
+3. Claude is relaunched with `--resume <session-id>` and (depending on replay
+   mode) the last prompt appended, so the conversation continues.
+
+## Paths
+
+- `~/.config/ccswap/config.json` — accounts + settings
+- `~/.config/ccswap/state.json` — active / last account
+- `~/.config/ccswap/runtime/` — per-run session state + hook settings
+- `~/.config/ccswap/accounts/<name>/claude/` — per-account Claude config dir
+
+On Windows the root is `%APPDATA%\ccswap`.
+
+## Config file compatibility
+
+The JSON field names (`accounts`, `claude_bin`, `replay_mode`, `custom_prompt`,
+`keychain_service`, `keychain_account`, `auto_swap`, `claude_config_dir`) are
+compatible with the legacy Python implementation, so an existing
+`~/.config/ccswap/config.json` loads into the TS version with no migration.
+Legacy `enabled` is read as `auto_swap`.
+
+## Tests
+
+```sh
+pnpm typecheck
+pnpm build
+pnpm test   # vitest: unit + PTY integration + Ink rendering
 ```
 
-The quickest day-to-day flow is to proxy Claude directly through `ccswap`:
+## Release
 
-```bash
-ccswap claude
-ccswap claude --model haiku
-ccswap claude --continue
+```sh
+# bump version in package.json, then
+pnpm run prepublishOnly   # typecheck + test + build
+npm publish               # requires npm login
 ```
 
-Everything after `ccswap claude` is forwarded to Claude, so this is the
-recommended entrypoint when you want auto-swap without opening the dashboard.
+A Homebrew formula template lives at `packaging/homebrew/ccswap.rb`. After
+publishing to npm, copy it into your `homebrew-tap` repo under `Formula/`,
+update the `url` and `sha256`, and users can then
+`brew install chenjingdev/tap/ccswap`.
 
-Pass Claude args through:
+## CI
 
-```bash
-ccswap run -- --model sonnet
-```
-
-## Dashboard Keys
-
-- `j` / `k` or arrows: move selection
-- `a`: add account
-- `l`: login with Claude and save the selected account
-- `r`: rename selected account
-- `Enter`: set selected account active
-- `space`: include/exclude selected account from auto-swap
-- `d`: delete selected account
-- `s`: open settings on the Sessions screen
-- `Tab`: switch between Accounts and Sessions
-- `1-9`: jump to account row
-- `?`: help
-- `q`: quit
-
-## Session Settings
-
-Press `s` in the Sessions screen to open replay settings.
-
-Sessions screen settings:
-
-- `m`: cycle replay mode
-- `p`: set the custom replay prompt
-- `x`: run Claude
-- `r`: run Claude with extra args
-- `q` / `Esc`: close settings
-
-## How Accounts Are Stored
-
-Each account gets its own Claude config directory under:
-
-```text
-~/.config/ccswap/accounts/<name>/claude
-```
-
-`ccswap` also saves one Claude login snapshot per account in your macOS
-Keychain. When you launch through `ccswap`, it restores the selected account's
-Claude credentials before starting Claude Code.
-
-## Login Setup
-
-`ccswap` uses real Claude subscription logins for interactive Claude Code.
-
-Recommended flow:
-
-1. Select an account row
-2. Press `l`
-3. Complete the browser flow from `claude auth login`
-4. When the command finishes, `ccswap` saves the resulting Claude login for that account
-
-You can also do the same from CLI:
-
-```bash
-ccswap login work
-```
-
-## Auto-Swap Behavior
-
-When Claude prints a limit message like `You've hit your limit`, `ccswap`:
-
-1. marks the current account as cooled down
-2. picks the next account that is included in auto-swap and not on cooldown
-3. uses runtime hooks to capture the current `session_id` and the latest submitted prompt
-4. relaunches Claude on the next account using the configured replay mode:
-   - `Last prompt`: `claude --resume <session-id> "<last-prompt>"`
-   - `Continue only`: `claude --resume <session-id>`
-   - `Custom prompt`: `claude --resume <session-id> "<custom-prompt>"`
-
-If Claude prints a reset time, `ccswap` uses it. Otherwise it falls back to a
-default cooldown window.
-
-## Files
-
-```text
-~/.config/ccswap/config.json
-~/.config/ccswap/state.json
-~/.config/ccswap/runtime/
-~/.config/ccswap/accounts/<name>/claude/
-```
+GitHub Actions runs `typecheck`, `build`, `test` on macOS, Linux, Windows on
+Node 20 and 22 (`.github/workflows/ci.yml`).

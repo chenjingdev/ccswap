@@ -1,0 +1,74 @@
+{
+  "name": "ccswap",
+  "version": "0.1.0-alpha.1",
+  "description": "Multi-account Claude Code switcher with auto-swap on limit",
+  "author": "김아람 <chenjing@laonpeople.com>",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "ccswap": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "homepage": "https://github.com/chenjingdev/ccswap#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chenjingdev/ccswap.git"
+  },
+  "bugs": {
+    "url": "https://github.com/chenjingdev/ccswap/issues"
+  },
+  "keywords": [
+    "cli",
+    "tui",
+    "claude",
+    "claude-code",
+    "anthropic",
+    "account-switcher",
+    "auto-swap",
+    "ink"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "pnpm typecheck && pnpm test && pnpm build"
+  },
+  "dependencies": {
+    "@napi-rs/keyring": "^1.1.11",
+    "commander": "^12.1.0",
+    "ink": "^7.0.1",
+    "ink-select-input": "^6.2.0",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "node-pty": "^1.1.0",
+    "react": "^19.2.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.2.14",
+    "ink-testing-library": "^4.0.0",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "node-pty",
+      "esbuild"
+    ]
+  }
+}
