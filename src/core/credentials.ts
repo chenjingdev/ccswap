@@ -87,11 +87,15 @@ export function storeAccountCredential(account: AccountData, credential: StoredC
 }
 
 export function activateAccountCredential(account: AccountData): boolean {
-  const credential = getAccountCredential(account);
-  if (credential === null) return false;
-  const user = credential.account || defaultKeychainAccount();
+  const source = getAccountCredential(account);
+  if (source === null) return false;
+  const user = source.account || defaultKeychainAccount();
+  const current = getStandardClaudeCredential();
+  if (current && current.secret === source.secret && current.account === user) {
+    return true;
+  }
   try {
-    new Entry(CLAUDE_KEYCHAIN_SERVICE, user).setPassword(credential.secret);
+    new Entry(CLAUDE_KEYCHAIN_SERVICE, user).setPassword(source.secret);
     return true;
   } catch {
     return false;
