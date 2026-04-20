@@ -38,3 +38,47 @@ export function formatUpdatedAt(timestampMs: number | null): string {
   const ss = String(d.getSeconds()).padStart(2, "0");
   return `${hh}:${mi}:${ss}`;
 }
+
+export function formatRelativeFromNow(iso: string | null): string {
+  if (!iso) return "";
+  const target = new Date(iso);
+  const diff = target.getTime() - Date.now();
+  if (Number.isNaN(diff)) return "";
+  const abs = Math.abs(diff);
+  const mins = Math.max(1, Math.floor(abs / 60_000));
+  const hours = Math.floor(mins / 60);
+  const days = Math.floor(hours / 24);
+  let text: string;
+  if (days >= 1) {
+    const rem = hours % 24;
+    text = rem ? `${days}d ${rem}h` : `${days}d`;
+  } else if (hours >= 1) {
+    const rem = mins % 60;
+    text = rem ? `${hours}h ${rem}m` : `${hours}h`;
+  } else {
+    text = `${mins}m`;
+  }
+  return diff >= 0 ? `in ${text}` : `${text} ago`;
+}
+
+export function formatAgo(timestampMs: number | null): string {
+  if (!timestampMs) return "";
+  const diff = Date.now() - timestampMs;
+  if (diff < 0 || Number.isNaN(diff)) return "";
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  if (hours < 24) return remMins ? `${hours}h ${remMins}m ago` : `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  return remHours ? `${days}d ${remHours}h ago` : `${days}d ago`;
+}
+
+export function credentialStoreLabel(platformName: string): string {
+  if (platformName === "darwin") return "macOS Keychain";
+  if (platformName === "win32") return "Windows Credential Manager";
+  return "Secret Service";
+}

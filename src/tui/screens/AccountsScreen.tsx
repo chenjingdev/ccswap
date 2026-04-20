@@ -1,8 +1,17 @@
+import { platform } from "node:os";
+
 import { Box, Text } from "ink";
 
 import type { AppStateData } from "../../core/state.js";
 import type { AccountView } from "../useConfigState.js";
-import { fitText, formatIsoLocal, formatUpdatedAt } from "../format.js";
+import {
+  credentialStoreLabel,
+  fitText,
+  formatAgo,
+  formatIsoLocal,
+  formatRelativeFromNow,
+  formatUpdatedAt,
+} from "../format.js";
 import { UsageBar } from "../UsageBar.js";
 
 interface Props {
@@ -117,29 +126,55 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
           {selected ? selected.account.name : "-"}
         </Text>
       </Box>
-      {selected ? (
-        <Box marginTop={1} flexDirection="column">
-          <Text color="gray">
-            {[
-              state.active_account === selected.account.name ? "Active" : "Inactive",
-              selected.account.auto_swap ? "auto-swap on" : "auto-swap off",
-              `plan ${selected.subscriptionType ?? "-"}`,
-              selected.loggedIn ? "logged in" : "no login",
-            ].join(" · ")}
-          </Text>
-          <Text>
-            <Text color="gray">5h </Text>
-            <UsageBar percent={selected.usage.five_hour_pct} width={18} />
-            <Text color="gray">  resets {formatIsoLocal(selected.usage.five_hour_reset_at)}</Text>
-          </Text>
-          <Text>
-            <Text color="gray">7d </Text>
-            <UsageBar percent={selected.usage.seven_day_pct} width={18} />
-            <Text color="gray">  resets {formatIsoLocal(selected.usage.seven_day_reset_at)}</Text>
-          </Text>
-          <Text color="gray">updated {formatUpdatedAt(selected.usage.cache_timestamp_ms)}</Text>
-        </Box>
-      ) : (
+      {selected ? (() => {
+        const eligible = accounts.filter((v) => v.account.auto_swap && v.loggedIn);
+        const eligibleRank = eligible.findIndex((v) => v.account.name === selected.account.name);
+        const swapStatus = !selected.loggedIn
+          ? "excluded · login needed"
+          : !selected.account.auto_swap
+          ? "excluded · auto-swap off"
+          : eligibleRank >= 0
+          ? `eligible · #${eligibleRank + 1} of ${eligible.length} ready`
+          : "eligible";
+        const credential = `${credentialStoreLabel(platform())} · ${selected.account.keychain_service}`;
+        const fiveRel = formatRelativeFromNow(selected.usage.five_hour_reset_at);
+        const sevenRel = formatRelativeFromNow(selected.usage.seven_day_reset_at);
+        const cachedClock = formatUpdatedAt(selected.usage.cache_timestamp_ms);
+        const cachedAgo = formatAgo(selected.usage.cache_timestamp_ms);
+        return (
+          <Box marginTop={1} flexDirection="column">
+            <Text>
+              <Text color="gray" bold>Status      </Text>
+              <Text color="gray">
+                {[
+                  state.active_account === selected.account.name ? "Active" : "Inactive",
+                  selected.account.auto_swap ? "auto-swap on" : "auto-swap off",
+                  `plan ${selected.subscriptionType ?? "-"}`,
+                  selected.loggedIn ? "logged in" : "no login",
+                ].join(" · ")}
+              </Text>
+            </Text>
+            <Text>
+              <Text color="gray" bold>Swap queue  </Text>
+              <Text color="gray">{swapStatus}</Text>
+            </Text>
+            <Text>
+              <Text color="gray" bold>Credential  </Text>
+              <Text color="gray">{credential}</Text>
+            </Text>
+            <Text>
+              <Text color="gray">5h  </Text>
+              <UsageBar percent={selected.usage.five_hour_pct} width={18} />
+              <Text color="gray">   resets {formatIsoLocal(selected.usage.five_hour_reset_at)}{fiveRel ? `  ${fiveRel}` : ""}</Text>
+            </Text>
+            <Text>
+              <Text color="gray">7d  </Text>
+              <UsageBar percent={selected.usage.seven_day_pct} width={18} />
+              <Text color="gray">   resets {formatIsoLocal(selected.usage.seven_day_reset_at)}{sevenRel ? `  ${sevenRel}` : ""}  ·  cached {cachedClock}{cachedAgo ? ` (${cachedAgo})` : ""}</Text>
+            </Text>
+          </Box>
+        );
+      })() : (
         <Text color="gray">No account selected.</Text>
       )}
     </Box>
