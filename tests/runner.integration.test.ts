@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,31 +6,28 @@ import { describe, expect, it } from "vitest";
 
 import { runClaude } from "../src/claude/runner.js";
 
-function writeFake(dir: string, script: string): string {
-  const path = join(dir, "fake-claude");
-  writeFileSync(path, script);
-  chmodSync(path, 0o755);
-  return path;
+// Cross-platform "fake claude" via inline Node scripts so the test suite
+// runs on POSIX and Windows without shell shebang gymnastics.
+const NODE_BIN = process.execPath;
+
+function nodeArgs(script: string): string[] {
+  return ["-e", script];
 }
 
 describe("runClaude integration", () => {
   it("detects limit and terminates the child", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "ccswap-runner-"));
-    const fake = writeFake(
-      tmp,
-      `#!/bin/bash
-echo "starting fake claude"
-echo "API error: Rate limit reached."
-# stay alive long enough to require escalation
-sleep 20
-echo "should not reach"
-`,
-    );
+    const script = [
+      `console.log("starting fake claude");`,
+      `console.log("API error: Rate limit reached.");`,
+      // stay alive long enough to require escalation
+      `setTimeout(() => {}, 20000);`,
+    ].join("");
 
     const start = Date.now();
     const result = await runClaude({
-      claudeBin: fake,
-      args: [],
+      claudeBin: NODE_BIN,
+      args: nodeArgs(script),
       cwd: tmp,
       env: { ...process.env },
       accountName: "fake",
@@ -47,17 +44,11 @@ echo "should not reach"
 
   it("reports clean exit when no limit", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "ccswap-runner-"));
-    const fake = writeFake(
-      tmp,
-      `#!/bin/bash
-echo "hello"
-exit 0
-`,
-    );
+    const script = `console.log("hello");`;
 
     const result = await runClaude({
-      claudeBin: fake,
-      args: [],
+      claudeBin: NODE_BIN,
+      args: nodeArgs(script),
       cwd: tmp,
       env: { ...process.env },
       accountName: "fake",
@@ -72,17 +63,11 @@ exit 0
 
   it("ignores limit text when shouldArmLimit returns false", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "ccswap-runner-"));
-    const fake = writeFake(
-      tmp,
-      `#!/bin/bash
-echo "rate limit reached"
-exit 0
-`,
-    );
+    const script = `console.log("rate limit reached");`;
 
     const result = await runClaude({
-      claudeBin: fake,
-      args: [],
+      claudeBin: NODE_BIN,
+      args: nodeArgs(script),
       cwd: tmp,
       env: { ...process.env },
       accountName: "fake",

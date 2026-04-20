@@ -23,7 +23,7 @@ describe("paths", () => {
     expect(mod.sanitizeAccountName("hello world!")).toBe("hello-world");
     expect(mod.sanitizeAccountName("---")).toBe("account");
     expect(mod.defaultKeychainService("my acc/1")).toBe("ccswap-account:my-acc-1");
-    expect(mod.defaultAccountDir("my acc/1").endsWith("/accounts/my-acc-1/claude")).toBe(true);
+    expect(mod.defaultAccountDir("my acc/1")).toMatch(/accounts[\\/]my-acc-1[\\/]claude$/);
   });
 
   it("resolves config paths under CCSWAP_CONFIG_DIR", async () => {
