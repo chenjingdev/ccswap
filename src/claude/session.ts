@@ -11,7 +11,6 @@ import {
   activateAccountCredential,
   getAccountCredential,
 } from "../core/credentials.js";
-import { ensureAccountDir } from "../core/accounts.js";
 import { buildClaudeEnv } from "../core/env.js";
 import { isAccountUsageExhausted } from "../core/usage.js";
 import {
@@ -139,7 +138,6 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
         detector_armed: detectorArmed,
       });
 
-      ensureAccountDir(account);
       const activated = activateAccountCredential(account);
       if (!activated) {
         process.stderr.write(
@@ -156,7 +154,7 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
         claudeBin: config.claude_bin,
         args: launchArgs,
         cwd: opts.launchCwd,
-        env: buildClaudeEnv(account.claude_config_dir),
+        env: buildClaudeEnv(),
         accountName: account.name,
         onStarted: (pid) => {
           updateRuntimeState(statePath, runId, {
