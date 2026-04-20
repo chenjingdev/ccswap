@@ -13,6 +13,7 @@ import {
 } from "../core/credentials.js";
 import { ensureAccountDir } from "../core/accounts.js";
 import { buildClaudeEnv } from "../core/env.js";
+import { isAccountUsageExhausted } from "../core/usage.js";
 import {
   cleanupStaleRuntimeSessions,
   loadRuntimeState,
@@ -167,7 +168,7 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
           updateRuntimeState(statePath, runId, { session_id: sessionId });
         },
         shouldArmLimit: () => loadRuntimeState(statePath, runId).detector_armed,
-        shouldConfirmLimit: () => true,
+        shouldConfirmLimit: () => isAccountUsageExhausted(account, true),
       });
 
       if (!result.limitHit) {
