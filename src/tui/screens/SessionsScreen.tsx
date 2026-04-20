@@ -51,7 +51,6 @@ export function SessionsScreen({ sessions, selectedIndex, replayMode, customProm
           </Box>
         ))}
       </Box>
-      <Text color="gray">{rule}</Text>
       <Box marginTop={1} flexDirection="column">
       {sessions.length === 0 ? (
         <Text color="gray">No live ccswap sessions.</Text>
@@ -97,7 +96,6 @@ export function SessionsScreen({ sessions, selectedIndex, replayMode, customProm
           {selected ? selected.state.run_id.slice(0, 8) : "-"}
         </Text>
       </Box>
-      <Text color="gray">{rule}</Text>
       {selected ? (
         <Box marginTop={1} flexDirection="column">
           <Text color="gray">{fitText(`Run ID: ${selected.state.run_id}`, Math.max(1, width - 2))}</Text>

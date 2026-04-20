@@ -56,7 +56,6 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
           </Box>
         ))}
       </Box>
-      <Text color="gray">{rule}</Text>
       <Box marginTop={1} flexDirection="column">
       {accounts.length === 0 ? (
         <Box marginTop={1}>
