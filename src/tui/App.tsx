@@ -181,29 +181,29 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
 
   const shortcuts = screen === "accounts" ? ACCOUNT_SHORTCUTS : SESSION_SHORTCUTS;
   const footerLine = "keys: " + shortcuts.map(([k, v]) => `${k} ${v}`).join("  ·  ");
-  const footerRule = "─".repeat(Math.max(10, columns - 2));
+  const footerRule = "─".repeat(Math.max(10, columns - 4));
 
   return (
-    <Box flexDirection="column" width={columns} height={rows}>
-      <Box paddingX={1} flexDirection="row" justifyContent="space-between">
+    <Box flexDirection="column" width={columns} height={rows} paddingX={2} paddingY={1}>
+      <Box flexDirection="row" justifyContent="space-between">
         <Text bold color="cyan">CCSWAP</Text>
         <Text color="gray">{subtitle}</Text>
       </Box>
       {message ? (
-        <Box paddingX={1}>
+        <Box marginTop={1}>
           <Text color={message.kind === "err" ? "red" : "green"}>
-            {fitText(message.text, Math.max(1, columns - 2))}
+            {fitText(message.text, Math.max(1, columns - 4))}
           </Text>
         </Box>
       ) : null}
 
-      <Box paddingX={1} flexDirection="column" flexGrow={1}>
+      <Box marginTop={1} flexDirection="column" flexGrow={1}>
         {screen === "accounts" ? (
           <AccountsScreen
             accounts={cfg.accounts}
             state={cfg.state}
             selectedIndex={clampedAccountCursor}
-            width={columns - 2}
+            width={columns - 4}
           />
         ) : (
           <SessionsScreen
@@ -211,14 +211,16 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
             selectedIndex={clampedSessionCursor}
             replayMode={cfg.config.replay_mode}
             customPrompt={cfg.config.custom_prompt}
-            width={columns - 2}
+            width={columns - 4}
           />
         )}
       </Box>
 
-      <Box paddingX={1} flexDirection="column">
+      <Box marginTop={1} flexDirection="column">
         <Text color="gray">{footerRule}</Text>
-        <Text color="gray">{fitText(footerLine, Math.max(1, columns - 2))}</Text>
+        <Box marginTop={1}>
+          <Text color="gray">{fitText(footerLine, Math.max(1, columns - 4))}</Text>
+        </Box>
         {!hasTty ? <Text color="red">(stdin is not a TTY — key input may not work)</Text> : null}
       </Box>
 

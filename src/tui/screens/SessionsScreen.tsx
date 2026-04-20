@@ -52,11 +52,9 @@ export function SessionsScreen({ sessions, selectedIndex, replayMode, customProm
         ))}
       </Box>
       <Text color="gray">{rule}</Text>
-
+      <Box marginTop={1} flexDirection="column">
       {sessions.length === 0 ? (
-        <Box marginTop={1}>
-          <Text color="gray">No live ccswap sessions.</Text>
-        </Box>
+        <Text color="gray">No live ccswap sessions.</Text>
       ) : (
         sessions.map((item, idx) => {
           const isSelected = idx === selectedIndex;
@@ -90,6 +88,7 @@ export function SessionsScreen({ sessions, selectedIndex, replayMode, customProm
           );
         })
       )}
+      </Box>
 
       <Box marginTop={1}>
         <Text bold color="cyan">DETAILS </Text>
@@ -100,7 +99,7 @@ export function SessionsScreen({ sessions, selectedIndex, replayMode, customProm
       </Box>
       <Text color="gray">{rule}</Text>
       {selected ? (
-        <Box flexDirection="column">
+        <Box marginTop={1} flexDirection="column">
           <Text color="gray">{fitText(`Run ID: ${selected.state.run_id}`, Math.max(1, width - 2))}</Text>
           <Text color="gray">{fitText(`Session ID: ${selected.state.session_id ?? "-"}   Account: ${selected.state.active_account ?? "-"}`, Math.max(1, width - 2))}</Text>
           <Text color="gray">{fitText(`Replay mode: ${replayLabel(selected.state.replay_mode)}`, Math.max(1, width - 2))}</Text>

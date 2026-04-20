@@ -199,12 +199,12 @@ describe("runtime state persistence", () => {
   beforeEach(() => {
     tempRoot = mkdtempSync(join(tmpdir(), "ccswap-runtime-"));
     vi.resetModules();
-    process.env.XDG_CONFIG_HOME = tempRoot;
+    process.env.CCSWAP_CONFIG_DIR = tempRoot;
   });
 
   afterEach(() => {
     rmSync(tempRoot, { recursive: true, force: true });
-    delete process.env.XDG_CONFIG_HOME;
+    delete process.env.CCSWAP_CONFIG_DIR;
   });
 
   it("round-trips and patches state", async () => {

@@ -57,7 +57,7 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
         ))}
       </Box>
       <Text color="gray">{rule}</Text>
-
+      <Box marginTop={1} flexDirection="column">
       {accounts.length === 0 ? (
         <Box marginTop={1}>
           <Text color="gray">No accounts yet. Press 'a' to add one.</Text>
@@ -106,6 +106,7 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
           );
         })
       )}
+      </Box>
 
       <Box marginTop={1}>
         <Text bold color="cyan">DETAILS </Text>
@@ -115,7 +116,7 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
         </Text>
       </Box>
       {selected ? (
-        <Box flexDirection="column">
+        <Box marginTop={1} flexDirection="column">
           <Text color="gray">
             {[
               state.active_account === selected.account.name ? "Active" : "Inactive",

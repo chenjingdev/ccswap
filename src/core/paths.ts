@@ -4,6 +4,8 @@ import { join } from "node:path";
 const APP_NAME = "ccswap";
 
 function configRoot(): string {
+  const override = process.env.CCSWAP_CONFIG_DIR;
+  if (override) return override;
   if (platform() === "win32") {
     const appData = process.env.APPDATA;
     if (appData) return join(appData, APP_NAME);

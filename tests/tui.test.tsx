@@ -12,12 +12,12 @@ describe("App TUI", () => {
   beforeEach(() => {
     tempRoot = mkdtempSync(join(tmpdir(), "ccswap-tui-"));
     vi.resetModules();
-    process.env.XDG_CONFIG_HOME = tempRoot;
+    process.env.CCSWAP_CONFIG_DIR = tempRoot;
   });
 
   afterEach(() => {
     rmSync(tempRoot, { recursive: true, force: true });
-    delete process.env.XDG_CONFIG_HOME;
+    delete process.env.CCSWAP_CONFIG_DIR;
   });
 
   it("renders empty state when no accounts exist", async () => {

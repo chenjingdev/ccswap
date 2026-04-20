@@ -1,4 +1,5 @@
 import { Box, Text, useInput } from "ink";
+import SelectInput from "ink-select-input";
 
 export interface EditAccountMenuProps {
   name: string;
@@ -9,6 +10,8 @@ export interface EditAccountMenuProps {
   onCancel: () => void;
 }
 
+type Action = "rename" | "toggle" | "delete";
+
 export function EditAccountMenu({
   name,
   autoSwap,
@@ -17,25 +20,32 @@ export function EditAccountMenu({
   onDelete,
   onCancel,
 }: EditAccountMenuProps) {
-  useInput((input, key) => {
+  useInput((_input, key) => {
     if (key.escape) onCancel();
-    else if (input === "r" || input === "R") onRename();
-    else if (input === "t" || input === "T") onToggleAutoSwap();
-    else if (input === "d" || input === "D") onDelete();
   });
 
+  const items = [
+    { label: "Rename", value: "rename" as Action },
+    { label: `Toggle auto-swap  (currently ${autoSwap ? "on" : "off"})`, value: "toggle" as Action },
+    { label: "Delete account", value: "delete" as Action },
+  ];
+
   return (
-    <Box borderStyle="round" borderColor="cyan" flexDirection="column" padding={1}>
+    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={2} paddingY={1}>
       <Text bold>Edit '{name}'</Text>
-      <Box marginTop={1} flexDirection="column">
-        <Text><Text color="cyan">r</Text> Rename</Text>
-        <Text>
-          <Text color="cyan">t</Text> Toggle auto-swap{" "}
-          <Text color="gray">(currently {autoSwap ? "on" : "off"})</Text>
-        </Text>
-        <Text><Text color="red">d</Text> Delete account</Text>
+      <Box marginTop={1}>
+        <SelectInput<Action>
+          items={items}
+          onSelect={(item) => {
+            if (item.value === "rename") onRename();
+            else if (item.value === "toggle") onToggleAutoSwap();
+            else if (item.value === "delete") onDelete();
+          }}
+        />
       </Box>
-      <Text color="gray">Esc: cancel</Text>
+      <Box marginTop={1}>
+        <Text color="gray">↑↓ navigate · Enter confirm · Esc cancel</Text>
+      </Box>
     </Box>
   );
 }

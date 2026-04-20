@@ -10,12 +10,12 @@ describe("paths", () => {
   beforeEach(() => {
     tempRoot = mkdtempSync(join(tmpdir(), "ccswap-test-"));
     vi.resetModules();
-    process.env.XDG_CONFIG_HOME = tempRoot;
+    process.env.CCSWAP_CONFIG_DIR = tempRoot;
   });
 
   afterEach(() => {
     rmSync(tempRoot, { recursive: true, force: true });
-    delete process.env.XDG_CONFIG_HOME;
+    delete process.env.CCSWAP_CONFIG_DIR;
   });
 
   it("sanitizes account names for directory and keychain service", async () => {
@@ -26,10 +26,10 @@ describe("paths", () => {
     expect(mod.defaultAccountDir("my acc/1").endsWith("/accounts/my-acc-1/claude")).toBe(true);
   });
 
-  it("resolves config paths under XDG_CONFIG_HOME", async () => {
+  it("resolves config paths under CCSWAP_CONFIG_DIR", async () => {
     const mod = await import("../src/core/paths.js");
-    expect(mod.CONFIG_DIR).toBe(join(tempRoot, "ccswap"));
-    expect(mod.CONFIG_PATH).toBe(join(tempRoot, "ccswap", "config.json"));
+    expect(mod.CONFIG_DIR).toBe(tempRoot);
+    expect(mod.CONFIG_PATH).toBe(join(tempRoot, "config.json"));
   });
 });
 
@@ -39,12 +39,12 @@ describe("config + accounts", () => {
   beforeEach(() => {
     tempRoot = mkdtempSync(join(tmpdir(), "ccswap-test-"));
     vi.resetModules();
-    process.env.XDG_CONFIG_HOME = tempRoot;
+    process.env.CCSWAP_CONFIG_DIR = tempRoot;
   });
 
   afterEach(() => {
     rmSync(tempRoot, { recursive: true, force: true });
-    delete process.env.XDG_CONFIG_HOME;
+    delete process.env.CCSWAP_CONFIG_DIR;
   });
 
   it("adds, renames, removes accounts and persists to JSON", async () => {
