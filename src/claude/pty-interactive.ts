@@ -33,6 +33,7 @@ export async function runInteractive(opts: InteractiveOptions): Promise<Interact
 
   if (opts.title) {
     stdout.write(`[ccswap] ${opts.title}\r\n`);
+    stdout.write(`[ccswap] Press Ctrl-C to cancel\r\n`);
   }
 
   const pty: IPty = nodePty.spawn(opts.cmd, opts.args, {
@@ -51,8 +52,19 @@ export async function runInteractive(opts: InteractiveOptions): Promise<Interact
     opts.onData?.(chunk);
   });
 
+  let killTimer: NodeJS.Timeout | null = null;
   const onStdin = (chunk: Buffer | string): void => {
-    pty.write(typeof chunk === "string" ? chunk : chunk.toString("utf-8"));
+    const data = typeof chunk === "string" ? chunk : chunk.toString("utf-8");
+    pty.write(data);
+    if (data.includes("\x03") && killTimer === null) {
+      killTimer = setTimeout(() => {
+        try {
+          pty.kill("SIGKILL");
+        } catch {
+          // pty already exited
+        }
+      }, 1500);
+    }
   };
   const onResize = (): void => {
     const size = getWinsize();
@@ -75,6 +87,10 @@ export async function runInteractive(opts: InteractiveOptions): Promise<Interact
       onDataSub.dispose();
       stdin.off("data", onStdin);
       stdout.off("resize", onResize);
+      if (killTimer) {
+        clearTimeout(killTimer);
+        killTimer = null;
+      }
       if (stdin.isTTY) {
         stdin.setRawMode(wasRaw);
       }

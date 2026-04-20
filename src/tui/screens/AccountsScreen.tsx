@@ -31,7 +31,7 @@ function layoutColumns(totalWidth: number): Column[] {
   const colMark = 1;   // ▌ selection bar
   const colActive = 2; // ★ / ·
   const colPlan = 8;
-  const colAccount = Math.max(14, Math.min(28, Math.floor(inner * 0.25)));
+  const colAccount = Math.max(18, Math.min(32, Math.floor(inner * 0.3)));
   const gap = 4;
   const used = colMark + colActive + colAccount + colPlan + gap;
   const colUsage = Math.max(28, inner - used);
@@ -77,8 +77,7 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
           const autoSwap = view.account.auto_swap;
           const nameColor = !view.loggedIn ? "red" : autoSwap ? "green" : "gray";
           const suffix = !autoSwap ? " (off)" : "";
-          const marker = isSelected ? "▌" : " ";
-          const markerColor = isSelected ? "magenta" : "gray";
+          const markerBg = isSelected ? "magenta" : undefined;
           const activeIcon = isActive ? "★" : "·";
           const activeColor = isActive ? "yellow" : "gray";
 
@@ -88,14 +87,14 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
               flexDirection="row"
             >
               <Box width={columns[0]!.width} marginRight={1}>
-                <Text color={markerColor} bold>{marker}</Text>
+                <Text backgroundColor={markerBg}> </Text>
               </Box>
               <Box width={columns[1]!.width} marginRight={1}>
                 <Text color={activeColor} bold={isActive}>{activeIcon}</Text>
               </Box>
               <Box width={columns[2]!.width} marginRight={1}>
                 <Text color={nameColor} bold={isSelected} dimColor={!autoSwap}>
-                  {fitText(view.account.name + suffix, columns[2]!.width)}
+                  {fitText((view.account.email ?? view.account.name) + suffix, columns[2]!.width)}
                 </Text>
               </Box>
               <Box width={columns[3]!.width} marginRight={1}>
@@ -153,6 +152,10 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
                   selected.loggedIn ? "logged in" : "no login",
                 ].join(" · ")}
               </Text>
+            </Text>
+            <Text>
+              <Text color="gray" bold>Email       </Text>
+              <Text color="gray">{selected.account.email ?? "- (re-login to populate)"}</Text>
             </Text>
             <Text>
               <Text color="gray" bold>Swap queue  </Text>

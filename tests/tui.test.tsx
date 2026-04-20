@@ -47,7 +47,7 @@ describe("App TUI", () => {
 
     const { App } = await import("../src/tui/App.js");
     const { lastFrame, unmount } = render(
-      React.createElement(App, { onLoginRequested: () => {}, hasTty: false }),
+      React.createElement(App, { onLoginRequested: () => {}, onAddRequested: () => {}, hasTty: false }),
     );
     const frame = lastFrame() ?? "";
     expect(frame).toContain("work");
@@ -63,7 +63,7 @@ describe("App TUI", () => {
   it("switches to sessions screen with Tab", async () => {
     const { App } = await import("../src/tui/App.js");
     const { lastFrame, stdin, unmount } = render(
-      React.createElement(App, { onLoginRequested: () => {}, hasTty: true }),
+      React.createElement(App, { onLoginRequested: () => {}, onAddRequested: () => {}, hasTty: true }),
     );
     stdin.write("\t"); // Tab
     await new Promise((r) => setTimeout(r, 20));
@@ -73,21 +73,15 @@ describe("App TUI", () => {
     unmount();
   });
 
-  it("opens add-account modal on pressing 'a' and submits", async () => {
+  it("triggers onAddRequested on pressing 'a'", async () => {
     const { App } = await import("../src/tui/App.js");
-    const { lastFrame, stdin, unmount } = render(
-      React.createElement(App, { onLoginRequested: () => {}, hasTty: true }),
+    const onAdd = vi.fn();
+    const { stdin, unmount } = render(
+      React.createElement(App, { onLoginRequested: () => {}, onAddRequested: onAdd, hasTty: true }),
     );
     stdin.write("a");
     await new Promise((r) => setTimeout(r, 20));
-    expect(lastFrame()).toContain("Add account");
-    stdin.write("myacc");
-    await new Promise((r) => setTimeout(r, 20));
-    stdin.write("\r"); // Enter
-    await new Promise((r) => setTimeout(r, 40));
-    const frame = lastFrame() ?? "";
-    expect(frame).toContain("myacc");
-    expect(frame).toContain("Added 'myacc'");
+    expect(onAdd).toHaveBeenCalledTimes(1);
     unmount();
   });
 });

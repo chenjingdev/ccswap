@@ -4,18 +4,16 @@ import SelectInput from "ink-select-input";
 export interface EditAccountMenuProps {
   name: string;
   autoSwap: boolean;
-  onRename: () => void;
   onToggleAutoSwap: () => void;
   onDelete: () => void;
   onCancel: () => void;
 }
 
-type Action = "rename" | "toggle" | "delete";
+type Action = "toggle" | "delete";
 
 export function EditAccountMenu({
   name,
   autoSwap,
-  onRename,
   onToggleAutoSwap,
   onDelete,
   onCancel,
@@ -25,7 +23,6 @@ export function EditAccountMenu({
   });
 
   const items = [
-    { label: "Rename", value: "rename" as Action },
     { label: `Toggle auto-swap  (currently ${autoSwap ? "on" : "off"})`, value: "toggle" as Action },
     { label: "Delete account", value: "delete" as Action },
   ];
@@ -37,8 +34,7 @@ export function EditAccountMenu({
         <SelectInput<Action>
           items={items}
           onSelect={(item) => {
-            if (item.value === "rename") onRename();
-            else if (item.value === "toggle") onToggleAutoSwap();
+            if (item.value === "toggle") onToggleAutoSwap();
             else if (item.value === "delete") onDelete();
           }}
         />

@@ -33,12 +33,11 @@ npm link
 ```sh
 ccswap                       # open the TUI dashboard
 ccswap init                  # create ~/.config/ccswap
-ccswap account add <name>    # add an account row
+ccswap account add <name>    # add an account row (legacy; prefer dashboard `a`)
 ccswap account list
-ccswap account rename <old> <new>
 ccswap account remove <name>
-ccswap login <name>          # run `claude auth login` and save the login
-ccswap use <name>            # set active account
+ccswap login <name>          # re-run `claude auth login` for an existing account
+ccswap use <name>            # set active account (name is the OAuth email for new accounts)
 ccswap run -- <claude-args>  # run claude through ccswap with auto-swap
 ccswap claude <claude-args>  # shorthand for the above
 ```
@@ -48,13 +47,21 @@ ccswap claude <claude-args>  # shorthand for the above
 ### Accounts screen
 - `j` / `k` / arrows — move selection
 - `Enter` — set active account
-- `a` — add account (modal)
-- `r` — rename selected account
-- `d` — delete selected account
-- `l` — run `claude auth login` for selected account
-- `Space` — toggle auto-swap for selected account
+- `a` — add account: launches `claude auth login`, captures the OAuth
+  credential, and registers the account under the login's email address
+  (`chenjing@gmail.com`). Collisions get a numeric suffix. Dashboard returns
+  automatically when the login flow ends (success or cancel).
+- `e` — edit selected account (toggle auto-swap / delete)
+- `l` — re-run `claude auth login` for the selected account (use when the
+  saved token has expired). Email is refreshed from `~/.claude.json` on
+  every successful login, so legacy short-named rows pick up their email
+  after one re-login.
 - `Tab` — switch to Sessions
-- `q` / `Ctrl-C` — quit
+- `q` / `Ctrl-C` — quit the dashboard
+
+During any `claude auth login` run, press `Ctrl-C` to cancel — ccswap
+forwards the signal and force-kills the subprocess after 1.5s if it doesn't
+exit on its own.
 
 ### Sessions screen
 - `j` / `k` / arrows — move selection
@@ -64,9 +71,10 @@ ccswap claude <claude-args>  # shorthand for the above
 
 ## How it works
 
-Each account owns its own `CLAUDE_CONFIG_DIR` under
-`~/.config/ccswap/accounts/<name>/claude`. The saved Claude login is kept in
-the OS credential store via `@napi-rs/keyring`:
+Per-account state lives entirely in the OS credential store via
+`@napi-rs/keyring` — ccswap does not override `CLAUDE_CONFIG_DIR`, so all
+accounts share `~/.claude` and skip Claude Code's first-run onboarding after
+the first login. Only the OAuth credential rotates per account:
 
 - macOS → Keychain
 - Linux → Secret Service (libsecret)
@@ -89,7 +97,9 @@ When a limit is confirmed:
 - `~/.config/ccswap/config.json` — accounts + settings
 - `~/.config/ccswap/state.json` — active / last account
 - `~/.config/ccswap/runtime/` — per-run session state + hook settings
-- `~/.config/ccswap/accounts/<name>/claude/` — per-account Claude config dir
+- `~/.config/ccswap/accounts/<name>/claude/` — vestigial per-account dir
+  (still created for legacy config compatibility, but no longer used at
+  launch since `~/.claude` is shared)
 
 On Windows the root is `%APPDATA%\ccswap`.
 
@@ -99,7 +109,9 @@ The JSON field names (`accounts`, `claude_bin`, `replay_mode`, `custom_prompt`,
 `keychain_service`, `keychain_account`, `auto_swap`, `claude_config_dir`) are
 compatible with the legacy Python implementation, so an existing
 `~/.config/ccswap/config.json` loads into the TS version with no migration.
-Legacy `enabled` is read as `auto_swap`.
+Legacy `enabled` is read as `auto_swap`. The TS version adds a nullable
+`email` field per account, populated from `~/.claude.json`'s `oauthAccount`
+on successful login; it is ignored by the Python code.
 
 ## Tests
 

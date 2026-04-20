@@ -13,6 +13,7 @@ export interface AccountData {
   auto_swap: boolean;
   keychain_service: string;
   keychain_account: string;
+  email: string | null;
 }
 
 export interface AppConfigData {
@@ -36,6 +37,7 @@ export function createAccount(name: string): AccountData {
     auto_swap: true,
     keychain_service: defaultKeychainService(name),
     keychain_account: defaultKeychainAccount(),
+    email: null,
   };
 }
 
@@ -49,6 +51,7 @@ function normalizeAccount(raw: Partial<AccountData> & { name: string; enabled?: 
     auto_swap: Boolean(autoSwap),
     keychain_service: raw.keychain_service || defaultKeychainService(name),
     keychain_account: raw.keychain_account || defaultKeychainAccount(),
+    email: typeof raw.email === "string" && raw.email ? raw.email : null,
   };
 }
 

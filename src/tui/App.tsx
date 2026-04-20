@@ -16,23 +16,22 @@ import { fitText, replayLabel } from "./format.js";
 
 type Screen = "accounts" | "sessions";
 type Modal =
-  | { kind: "add" }
   | { kind: "edit"; name: string; autoSwap: boolean }
-  | { kind: "rename"; current: string }
   | { kind: "confirm-delete"; name: string }
   | { kind: "custom-prompt" }
   | null;
 
 export interface AppProps {
   onLoginRequested: (accountName: string) => void;
+  onAddRequested: () => void;
   hasTty: boolean;
 }
 
 const ACCOUNT_SHORTCUTS: Array<[string, string]> = [
   ["Tab", "Sessions"],
   ["Enter", "Active"],
-  ["a", "Add"],
-  ["l", "Login"],
+  ["a", "Add (login)"],
+  ["l", "Re-login"],
   ["e", "Edit"],
   ["q", "Quit"],
 ];
@@ -44,7 +43,7 @@ const SESSION_SHORTCUTS: Array<[string, string]> = [
   ["q", "Quit"],
 ];
 
-export function App({ onLoginRequested, hasTty }: AppProps) {
+export function App({ onLoginRequested, onAddRequested, hasTty }: AppProps) {
   const { exit } = useApp();
   const { columns, rows } = useTerminalSize();
   const cfg = useConfigState();
@@ -124,7 +123,7 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
         return;
       }
       if (input === "a") {
-        setModal({ kind: "add" });
+        onAddRequested();
         return;
       }
       if (input === "e" && selectedAccount) {
@@ -224,29 +223,11 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
         {!hasTty ? <Text color="red">(stdin is not a TTY — key input may not work)</Text> : null}
       </Box>
 
-      {modal?.kind === "add" ? (
-        <InputModal
-          title="Add account"
-          placeholder="name"
-          onCancel={() => setModal(null)}
-          onSubmit={(name) => {
-            if (!name) {
-              setModal(null);
-              return;
-            }
-            const err = cfg.addAccount(name);
-            setModal(null);
-            setMessage(err ? { text: err, kind: "err" } : { text: `Added '${name}'`, kind: "ok" });
-          }}
-        />
-      ) : null}
-
       {modal?.kind === "edit" ? (
         <EditAccountMenu
           name={modal.name}
           autoSwap={modal.autoSwap}
           onCancel={() => setModal(null)}
-          onRename={() => setModal({ kind: "rename", current: modal.name })}
           onToggleAutoSwap={() => {
             cfg.toggleAutoSwap(modal.name);
             const nextState = !modal.autoSwap;
@@ -254,23 +235,6 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
             setMessage({ text: `Auto-swap ${nextState ? "on" : "off"} for '${modal.name}'`, kind: "ok" });
           }}
           onDelete={() => setModal({ kind: "confirm-delete", name: modal.name })}
-        />
-      ) : null}
-
-      {modal?.kind === "rename" ? (
-        <InputModal
-          title={`Rename '${modal.current}'`}
-          initialValue={modal.current}
-          onCancel={() => setModal(null)}
-          onSubmit={(newName) => {
-            if (!newName || newName === modal.current) {
-              setModal(null);
-              return;
-            }
-            const err = cfg.renameAccount(modal.current, newName);
-            setModal(null);
-            setMessage(err ? { text: err, kind: "err" } : { text: `Renamed to '${newName}'`, kind: "ok" });
-          }}
         />
       ) : null}
 

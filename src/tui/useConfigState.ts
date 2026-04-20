@@ -1,10 +1,6 @@
 import { useCallback, useState } from "react";
 
-import {
-  addAccount as addAccountCore,
-  removeAccount as removeAccountCore,
-  renameAccount as renameAccountCore,
-} from "../core/accounts.js";
+import { removeAccount as removeAccountCore } from "../core/accounts.js";
 import type { AccountData, AppConfigData } from "../core/config.js";
 import { loadConfig, saveConfig } from "../core/config.js";
 import { getAccountCredential, parseStoredCredential } from "../core/credentials.js";
@@ -23,8 +19,6 @@ export interface ConfigStateApi {
   state: AppStateData;
   accounts: AccountView[];
   reload(): void;
-  addAccount(name: string): string | null;
-  renameAccount(oldName: string, newName: string): string | null;
   removeAccount(name: string): string | null;
   setActive(name: string): string | null;
   toggleAutoSwap(name: string): void;
@@ -54,35 +48,6 @@ export function useConfigState(): ConfigStateApi {
     setConfig(next);
     setAccounts(buildViews(next));
     setState(loadState());
-  }, [buildViews]);
-
-  const addAccount = useCallback((name: string): string | null => {
-    try {
-      const current = loadConfig();
-      addAccountCore(current, name);
-      setConfig(current);
-      setAccounts(buildViews(current));
-      return null;
-    } catch (err) {
-      return (err as Error).message;
-    }
-  }, [buildViews]);
-
-  const renameAccount = useCallback((oldName: string, newName: string): string | null => {
-    try {
-      const current = loadConfig();
-      renameAccountCore(current, oldName, newName);
-      const st = loadState();
-      if (st.active_account === oldName) st.active_account = newName;
-      if (st.last_account === oldName) st.last_account = newName;
-      saveState(st);
-      setConfig(current);
-      setAccounts(buildViews(current));
-      setState(st);
-      return null;
-    } catch (err) {
-      return (err as Error).message;
-    }
   }, [buildViews]);
 
   const removeAccount = useCallback((name: string): string | null => {
@@ -129,8 +94,6 @@ export function useConfigState(): ConfigStateApi {
     state,
     accounts,
     reload,
-    addAccount,
-    renameAccount,
     removeAccount,
     setActive,
     toggleAutoSwap,

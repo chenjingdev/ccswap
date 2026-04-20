@@ -62,7 +62,7 @@ export function SessionsScreen({ sessions, selectedIndex, replayMode, customProm
           const sessionShort = item.state.session_id ? item.state.session_id.slice(0, 12) : "-";
           const notes = item.state.last_prompt || item.state.custom_prompt || item.state.cwd || "-";
           const cells = [
-            isSelected ? "▌" : " ",
+            "",
             String(idx + 1),
             runShort,
             item.state.active_account ?? "-",
@@ -77,9 +77,15 @@ export function SessionsScreen({ sessions, selectedIndex, replayMode, customProm
                 const isMarker = cidx === 0;
                 return (
                   <Box key={cidx} width={col.width} marginRight={cidx < cells.length - 1 ? 1 : 0}>
-                    <Text bold={isSelected} color={isMarker && isSelected ? "magenta" : color}>
-                      {fitText(cell, col.width)}
-                    </Text>
+                    {isMarker ? (
+                      <Text backgroundColor={isSelected ? "magenta" : undefined}>
+                        {" ".repeat(col.width)}
+                      </Text>
+                    ) : (
+                      <Text bold={isSelected} color={color}>
+                        {fitText(cell, col.width)}
+                      </Text>
+                    )}
                   </Box>
                 );
               })}

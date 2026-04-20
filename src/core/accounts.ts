@@ -4,7 +4,6 @@ import { join } from "node:path";
 import type { AccountData, AppConfigData } from "./config.js";
 import { createAccount, findAccount, saveConfig } from "./config.js";
 import { deleteAccountCredential, getAccountCredential } from "./credentials.js";
-import { defaultAccountDir, defaultKeychainService } from "./paths.js";
 
 const CLAUDE_CONFIG_SUBDIRS = [
   "logs",
@@ -34,32 +33,15 @@ export function addAccount(config: AppConfigData, name: string): AccountData {
   return account;
 }
 
-export function renameAccount(config: AppConfigData, oldName: string, newName: string): AccountData {
-  if (oldName === newName) {
-    const existing = findAccount(config, oldName);
-    if (!existing) throw new Error(`account "${oldName}" not found`);
-    return existing;
+export function deriveUniqueAccountName(config: AppConfigData, hint: string | null): string {
+  const base = (hint ?? "").toLowerCase().trim() || "account";
+  const existing = new Set(config.accounts.map((a) => a.name));
+  if (!existing.has(base)) return base;
+  for (let i = 2; i < 1000; i++) {
+    const candidate = `${base}-${i}`;
+    if (!existing.has(candidate)) return candidate;
   }
-  if (findAccount(config, newName)) {
-    throw new Error(`account "${newName}" already exists`);
-  }
-  const account = findAccount(config, oldName);
-  if (!account) throw new Error(`account "${oldName}" not found`);
-
-  const wasDefaultDir = account.claude_config_dir === defaultAccountDir(oldName);
-  account.name = newName;
-  if (wasDefaultDir) {
-    account.claude_config_dir = defaultAccountDir(newName);
-  }
-  if (
-    !account.keychain_service ||
-    account.keychain_service === defaultKeychainService(oldName)
-  ) {
-    account.keychain_service = defaultKeychainService(newName);
-  }
-  saveConfig(config);
-  ensureAccountDir(account);
-  return account;
+  return `${base}-${Date.now()}`;
 }
 
 export function removeAccount(config: AppConfigData, name: string): void {

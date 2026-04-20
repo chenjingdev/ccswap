@@ -47,10 +47,9 @@ describe("config + accounts", () => {
     delete process.env.CCSWAP_CONFIG_DIR;
   });
 
-  it("adds, renames, removes accounts and persists to JSON", async () => {
+  it("adds and removes accounts and persists to JSON", async () => {
     const configMod = await import("../src/core/config.js");
     const accountsMod = await import("../src/core/accounts.js");
-    const pathsMod = await import("../src/core/paths.js");
 
     let cfg = configMod.loadConfig();
     expect(cfg.accounts).toHaveLength(0);
@@ -63,14 +62,7 @@ describe("config + accounts", () => {
     expect(cfg.accounts[0]?.keychain_service).toBe("ccswap-account:work");
     expect(cfg.accounts[0]?.auto_swap).toBe(true);
 
-    accountsMod.renameAccount(cfg, "side", "personal");
-    cfg = configMod.loadConfig();
-    const renamed = configMod.findAccount(cfg, "personal");
-    expect(renamed).toBeDefined();
-    expect(renamed?.keychain_service).toBe("ccswap-account:personal");
-    expect(renamed?.claude_config_dir).toBe(pathsMod.defaultAccountDir("personal"));
-
-    accountsMod.removeAccount(cfg, "personal");
+    accountsMod.removeAccount(cfg, "side");
     cfg = configMod.loadConfig();
     expect(cfg.accounts.map((a) => a.name)).toEqual(["work"]);
   });
@@ -98,7 +90,7 @@ describe("config + accounts", () => {
     );
     const account = (raw["accounts"] as Array<Record<string, unknown>>)[0]!;
     expect(Object.keys(account).sort()).toEqual(
-      ["auto_swap", "claude_config_dir", "keychain_account", "keychain_service", "name"].sort(),
+      ["auto_swap", "claude_config_dir", "email", "keychain_account", "keychain_service", "name"].sort(),
     );
   });
 

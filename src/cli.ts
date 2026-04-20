@@ -1,7 +1,7 @@
 import { Command } from "commander";
 
 import { normalizeCliArgs } from "./claude/args.js";
-import { runAccountAdd, runAccountList, runAccountRemove, runAccountRename } from "./commands/account.js";
+import { runAccountAdd, runAccountList, runAccountRemove } from "./commands/account.js";
 import { runClaudeCommand } from "./commands/claude.js";
 import { runDashboard } from "./commands/dashboard.js";
 import { runHookPromptSubmit, runHookSessionStart } from "./commands/hook.js";
@@ -27,10 +27,6 @@ function build(): Command {
     .command("add <name>")
     .description("add a new account")
     .action((name: string) => process.exit(runAccountAdd(name)));
-  account
-    .command("rename <old> <new>")
-    .description("rename an account")
-    .action((oldName: string, newName: string) => process.exit(runAccountRename(oldName, newName)));
   account
     .command("list")
     .alias("ls")
