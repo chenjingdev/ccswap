@@ -1,14 +1,17 @@
 import { Box, Text, useApp, useInput } from "ink";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { REPLAY_MODES } from "../core/constants.js";
-import { listRuntimeSessions, type RuntimeSessionView } from "../core/runtime.js";
 import { saveConfig } from "../core/config.js";
+import { listRuntimeSessions, type RuntimeSessionView } from "../core/runtime.js";
+import { refreshAccountUsage } from "../core/usage.js";
 import { AccountsScreen } from "./screens/AccountsScreen.js";
 import { SessionsScreen } from "./screens/SessionsScreen.js";
 import { InputModal } from "./modals/InputModal.js";
 import { ConfirmModal } from "./modals/ConfirmModal.js";
 import { useConfigState } from "./useConfigState.js";
+import { useTerminalSize } from "./useTerminalSize.js";
+import { fitText, replayLabel } from "./format.js";
 
 type Screen = "accounts" | "sessions";
 type Modal =
@@ -23,14 +26,34 @@ export interface AppProps {
   hasTty: boolean;
 }
 
+const ACCOUNT_SHORTCUTS: Array<[string, string]> = [
+  ["Tab", "Sessions"],
+  ["a", "Add"],
+  ["l", "Login"],
+  ["r", "Rename"],
+  ["Enter", "Set active"],
+  ["Space", "Swap"],
+  ["d", "Delete"],
+  ["q", "Quit"],
+];
+
+const SESSION_SHORTCUTS: Array<[string, string]> = [
+  ["Tab", "Accounts"],
+  ["j/k", "Move"],
+  ["m", "Replay mode"],
+  ["p", "Custom prompt"],
+  ["q", "Quit"],
+];
+
 export function App({ onLoginRequested, hasTty }: AppProps) {
   const { exit } = useApp();
+  const { columns, rows } = useTerminalSize();
   const cfg = useConfigState();
   const [screen, setScreen] = useState<Screen>("accounts");
   const [accountCursor, setAccountCursor] = useState(0);
   const [sessionCursor, setSessionCursor] = useState(0);
   const [modal, setModal] = useState<Modal>(null);
-  const [flash, setFlash] = useState<{ text: string; color: string } | null>(null);
+  const [message, setMessage] = useState<{ text: string; kind: "ok" | "err" } | null>(null);
   const [sessions, setSessions] = useState<RuntimeSessionView[]>(() => listRuntimeSessions());
 
   useEffect(() => {
@@ -41,10 +64,35 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
   }, []);
 
   useEffect(() => {
-    if (!flash) return;
-    const t = setTimeout(() => setFlash(null), 2500);
+    if (!message) return;
+    const t = setTimeout(() => setMessage(null), 4000);
     return () => clearTimeout(t);
-  }, [flash]);
+  }, [message]);
+
+  // Background usage refresh — round-robin over accounts that have a login.
+  useEffect(() => {
+    let cancelled = false;
+    let cursor = 0;
+    const tick = async (): Promise<void> => {
+      const candidates = cfg.accounts.filter((v) => v.loggedIn);
+      if (candidates.length === 0) return;
+      const target = candidates[cursor % candidates.length];
+      cursor = (cursor + 1) % candidates.length;
+      if (!target) return;
+      try {
+        await refreshAccountUsage(target.account, false);
+        if (!cancelled) cfg.reload();
+      } catch {
+        // ignore
+      }
+    };
+    void tick();
+    const id = setInterval(() => void tick(), 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [cfg.accounts.length, cfg.reload]);
 
   const selectedAccount = cfg.accounts[accountCursor];
 
@@ -55,7 +103,7 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
     next.replay_mode = modeNext;
     saveConfig(next);
     cfg.reload();
-    setFlash({ text: `Replay mode: ${modeNext}`, color: "cyan" });
+    setMessage({ text: `Replay mode: ${replayLabel(modeNext)}`, kind: "ok" });
   };
 
   useInput((input, key) => {
@@ -76,7 +124,7 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
         return;
       }
       if (key.downArrow || input === "j") {
-        setAccountCursor((i) => Math.min(cfg.accounts.length - 1, i + 1));
+        setAccountCursor((i) => Math.min(Math.max(0, cfg.accounts.length - 1), i + 1));
         return;
       }
       if (input === "a") {
@@ -97,7 +145,11 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
       }
       if (key.return && selectedAccount) {
         const err = cfg.setActive(selectedAccount.account.name);
-        setFlash(err ? { text: err, color: "red" } : { text: `Active: ${selectedAccount.account.name}`, color: "green" });
+        setMessage(
+          err
+            ? { text: err, kind: "err" }
+            : { text: `Active account set to '${selectedAccount.account.name}'`, kind: "ok" },
+        );
         return;
       }
       if (input === "l" && selectedAccount) {
@@ -126,51 +178,55 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
     }
   });
 
-  const header = useMemo(() => {
-    const tabs = (
-      <Text>
-        {screen === "accounts" ? (
-          <>
-            <Text bold color="cyan">Accounts</Text>
-            <Text color="gray">  ·  Sessions</Text>
-          </>
-        ) : (
-          <>
-            <Text color="gray">Accounts  ·  </Text>
-            <Text bold color="cyan">Sessions</Text>
-          </>
-        )}
-      </Text>
-    );
-    return (
-      <Box paddingX={1} marginBottom={1} flexDirection="column">
-        <Text bold>ccswap</Text>
-        {tabs}
-      </Box>
-    );
-  }, [screen]);
+  const clampedAccountCursor = Math.min(accountCursor, Math.max(0, cfg.accounts.length - 1));
+  const clampedSessionCursor = Math.min(sessionCursor, Math.max(0, sessions.length - 1));
+  const selectedLabel =
+    screen === "accounts" && cfg.accounts.length > 0
+      ? `${clampedAccountCursor + 1}/${cfg.accounts.length}`
+      : screen === "sessions" && sessions.length > 0
+        ? `${clampedSessionCursor + 1}/${sessions.length}`
+        : "0/0";
 
-  const helpLine = screen === "accounts"
-    ? "j/k: move  Enter: activate  a: add  r: rename  d: delete  l: login  space: toggle auto-swap  Tab: sessions  q: quit"
-    : "j/k: move  m: replay mode  p: custom prompt  Tab: accounts  q: quit";
+  const subtitle = `replay ${replayLabel(cfg.config.replay_mode)}  active ${cfg.state.active_account ?? "-"}  screen ${screen}  selected ${selectedLabel}`;
+  const infoText = message ? message.text : "Ready";
+  const infoColor = message ? (message.kind === "err" ? "red" : "green") : "gray";
+
+  const shortcuts = screen === "accounts" ? ACCOUNT_SHORTCUTS : SESSION_SHORTCUTS;
+  const footerLine = "keys: " + shortcuts.map(([k, v]) => `${k} ${v}`).join("  ·  ");
+  const footerRule = "─".repeat(Math.max(10, columns - 2));
 
   return (
-    <Box flexDirection="column">
-      {header}
-      {screen === "accounts" ? (
-        <AccountsScreen
-          accounts={cfg.accounts}
-          state={cfg.state}
-          selectedIndex={Math.min(accountCursor, Math.max(0, cfg.accounts.length - 1))}
-        />
-      ) : (
-        <SessionsScreen
-          sessions={sessions}
-          selectedIndex={Math.min(sessionCursor, Math.max(0, sessions.length - 1))}
-          replayMode={cfg.config.replay_mode}
-          customPrompt={cfg.config.custom_prompt}
-        />
-      )}
+    <Box flexDirection="column" width={columns} height={rows}>
+      <Box paddingX={1} flexDirection="column">
+        <Text bold color="cyan">CCSWAP</Text>
+        <Text color="gray">{fitText(subtitle, Math.max(1, columns - 2))}</Text>
+        <Text color={infoColor}>{fitText(`info  ${infoText}`, Math.max(1, columns - 2))}</Text>
+      </Box>
+
+      <Box paddingX={1} flexDirection="column" flexGrow={1}>
+        {screen === "accounts" ? (
+          <AccountsScreen
+            accounts={cfg.accounts}
+            state={cfg.state}
+            selectedIndex={clampedAccountCursor}
+            width={columns - 2}
+          />
+        ) : (
+          <SessionsScreen
+            sessions={sessions}
+            selectedIndex={clampedSessionCursor}
+            replayMode={cfg.config.replay_mode}
+            customPrompt={cfg.config.custom_prompt}
+            width={columns - 2}
+          />
+        )}
+      </Box>
+
+      <Box paddingX={1} flexDirection="column">
+        <Text color="gray">{footerRule}</Text>
+        <Text color="gray">{fitText(footerLine, Math.max(1, columns - 2))}</Text>
+        {!hasTty ? <Text color="red">(stdin is not a TTY — key input may not work)</Text> : null}
+      </Box>
 
       {modal?.kind === "add" ? (
         <InputModal
@@ -184,14 +240,14 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
             }
             const err = cfg.addAccount(name);
             setModal(null);
-            setFlash(err ? { text: err, color: "red" } : { text: `Added ${name}`, color: "green" });
+            setMessage(err ? { text: err, kind: "err" } : { text: `Added '${name}'`, kind: "ok" });
           }}
         />
       ) : null}
 
       {modal?.kind === "rename" ? (
         <InputModal
-          title={`Rename "${modal.current}"`}
+          title={`Rename '${modal.current}'`}
           initialValue={modal.current}
           onCancel={() => setModal(null)}
           onSubmit={(newName) => {
@@ -201,7 +257,7 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
             }
             const err = cfg.renameAccount(modal.current, newName);
             setModal(null);
-            setFlash(err ? { text: err, color: "red" } : { text: `Renamed to ${newName}`, color: "green" });
+            setMessage(err ? { text: err, kind: "err" } : { text: `Renamed to '${newName}'`, kind: "ok" });
           }}
         />
       ) : null}
@@ -209,12 +265,12 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
       {modal?.kind === "confirm-delete" ? (
         <ConfirmModal
           title="Delete account"
-          message={`Remove "${modal.name}" and forget its saved login?`}
+          message={`Remove '${modal.name}' and forget its saved login?`}
           onCancel={() => setModal(null)}
           onConfirm={() => {
             const err = cfg.removeAccount(modal.name);
             setModal(null);
-            setFlash(err ? { text: err, color: "red" } : { text: `Deleted ${modal.name}`, color: "yellow" });
+            setMessage(err ? { text: err, kind: "err" } : { text: `Deleted '${modal.name}'`, kind: "ok" });
           }}
         />
       ) : null}
@@ -230,16 +286,10 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
             saveConfig(next);
             cfg.reload();
             setModal(null);
-            setFlash({ text: "Custom prompt saved", color: "green" });
+            setMessage({ text: "Custom prompt saved", kind: "ok" });
           }}
         />
       ) : null}
-
-      <Box marginTop={1} paddingX={1} flexDirection="column">
-        {flash ? <Text color={flash.color}>{flash.text}</Text> : <Text> </Text>}
-        <Text color="gray">{helpLine}</Text>
-        {!hasTty ? <Text color="red">(stdin is not a TTY — key input may not work)</Text> : null}
-      </Box>
     </Box>
   );
 }

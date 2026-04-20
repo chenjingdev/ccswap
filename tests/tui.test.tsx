@@ -27,7 +27,7 @@ describe("App TUI", () => {
       React.createElement(App, { onLoginRequested: onLogin, hasTty: false }),
     );
     const frame = lastFrame();
-    expect(frame).toContain("ccswap");
+    expect(frame).toContain("CCSWAP");
     expect(frame).toContain("No accounts yet");
     unmount();
   });
@@ -52,8 +52,10 @@ describe("App TUI", () => {
     const frame = lastFrame() ?? "";
     expect(frame).toContain("work");
     expect(frame).toContain("side");
-    expect(frame).toContain("★");
-    expect(frame).toContain("no login");
+    // Active account shows "Current" in the Active column.
+    expect(frame).toContain("Current");
+    // Header row shows "N" for no-login accounts.
+    expect(frame).toContain("ACCOUNTS");
     unmount();
   });
 
@@ -65,7 +67,8 @@ describe("App TUI", () => {
     stdin.write("\t"); // Tab
     await new Promise((r) => setTimeout(r, 20));
     const frame = lastFrame() ?? "";
-    expect(frame).toContain("No active Claude sessions");
+    expect(frame).toContain("SESSIONS");
+    expect(frame).toContain("No live ccswap sessions");
     unmount();
   });
 
@@ -83,7 +86,7 @@ describe("App TUI", () => {
     await new Promise((r) => setTimeout(r, 40));
     const frame = lastFrame() ?? "";
     expect(frame).toContain("myacc");
-    expect(frame).toContain("Added myacc");
+    expect(frame).toContain("Added 'myacc'");
     unmount();
   });
 });

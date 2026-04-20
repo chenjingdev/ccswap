@@ -9,11 +9,13 @@ import type { AccountData, AppConfigData } from "../core/config.js";
 import { loadConfig, saveConfig } from "../core/config.js";
 import { getAccountCredential, parseStoredCredential } from "../core/credentials.js";
 import { loadState, saveState, type AppStateData } from "../core/state.js";
+import { accountUsageCachePath, loadUsageCache, type UsageSnapshot } from "../core/usage.js";
 
 export interface AccountView {
   account: AccountData;
   loggedIn: boolean;
   subscriptionType: string | null;
+  usage: UsageSnapshot;
 }
 
 export interface ConfigStateApi {
@@ -40,6 +42,7 @@ export function useConfigState(): ConfigStateApi {
         account,
         loggedIn: credential !== null,
         subscriptionType: parsed.subscription_type,
+        usage: loadUsageCache(accountUsageCachePath(account)),
       };
     });
   }, []);

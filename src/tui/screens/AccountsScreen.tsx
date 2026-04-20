@@ -2,75 +2,163 @@ import { Box, Text } from "ink";
 
 import type { AppStateData } from "../../core/state.js";
 import type { AccountView } from "../useConfigState.js";
+import { fitText, formatIsoLocal, formatUpdatedAt, usageBar } from "../format.js";
 
 interface Props {
   accounts: AccountView[];
   state: AppStateData;
   selectedIndex: number;
+  width: number;
 }
 
-function statusLabel(view: AccountView): { text: string; color: string } {
-  if (view.loggedIn) {
-    const sub = view.subscriptionType ? ` · ${view.subscriptionType}` : "";
-    return { text: `logged in${sub}`, color: "green" };
-  }
-  return { text: "no login", color: "red" };
+interface Column {
+  label: string;
+  width: number;
 }
 
-export function AccountsScreen({ accounts, state, selectedIndex }: Props) {
-  if (accounts.length === 0) {
-    return (
-      <Box flexDirection="column" padding={1}>
-        <Text color="gray">No accounts yet. Press [a] to add one.</Text>
-      </Box>
-    );
-  }
+function layoutColumns(totalWidth: number): Column[] {
+  const inner = Math.max(50, totalWidth - 3);
+  const colCursor = 2;
+  const colNumber = 4;
+  const colActive = 8;
+  const colSwap = 6;
+  const colAccount = Math.max(12, Math.min(18, Math.floor(inner / 5)));
+  const colLogin = 7;
+  const colPlan = 8;
+  const gap = 7;
+  const used = colCursor + colNumber + colActive + colSwap + colAccount + colLogin + colPlan + gap;
+  const colUsage = Math.max(24, inner - used);
+  return [
+    { label: "", width: colCursor },
+    { label: "No.", width: colNumber },
+    { label: "Active", width: colActive },
+    { label: "Swap", width: colSwap },
+    { label: "Account", width: colAccount },
+    { label: "Auth", width: colLogin },
+    { label: "Plan", width: colPlan },
+    { label: "Usage", width: colUsage },
+  ];
+}
 
+function Row({
+  cells,
+  columns,
+  selected,
+}: {
+  cells: React.ReactNode[];
+  columns: Column[];
+  selected: boolean;
+}) {
   return (
-    <Box flexDirection="column">
-      <Box paddingX={1}>
-        <Box width={3}><Text bold> </Text></Box>
-        <Box width={22}><Text bold underline>Name</Text></Box>
-        <Box width={22}><Text bold underline>Status</Text></Box>
-        <Box width={14}><Text bold underline>Auto-swap</Text></Box>
-      </Box>
-      {accounts.map((view, idx) => {
-        const isSelected = idx === selectedIndex;
-        const isActive = state.active_account === view.account.name;
-        const status = statusLabel(view);
-        const row = (
-          <Box paddingX={1}>
-            <Box width={3}>
-              <Text color={isSelected ? "cyan" : undefined}>{isSelected ? "›" : " "}</Text>
-            </Box>
-            <Box width={22}>
-              <Text color={isActive ? "cyan" : undefined} bold={isActive}>
-                {isActive ? "★ " : "  "}
-                {view.account.name}
-              </Text>
-            </Box>
-            <Box width={22}>
-              <Text color={status.color}>{status.text}</Text>
-            </Box>
-            <Box width={14}>
-              <Text color={view.account.auto_swap ? "green" : "gray"}>
-                {view.account.auto_swap ? "enabled" : "disabled"}
-              </Text>
-            </Box>
-          </Box>
-        );
+    <Box flexDirection="row">
+      {cells.map((cell, idx) => {
+        const col = columns[idx]!;
         return (
-          <Box key={view.account.name} flexDirection="row">
-            {isSelected ? (
-              <Box backgroundColor="gray" width="100%">
-                {row}
-              </Box>
+          <Box key={idx} width={col.width} marginRight={idx < cells.length - 1 ? 1 : 0}>
+            {typeof cell === "string" ? (
+              <Text bold={selected}>{fitText(cell, col.width)}</Text>
             ) : (
-              row
+              cell
             )}
           </Box>
         );
       })}
+    </Box>
+  );
+}
+
+export function AccountsScreen({ accounts, state, selectedIndex, width }: Props) {
+  const columns = layoutColumns(width);
+  const selected = accounts[selectedIndex];
+
+  const headerCells = columns.map((col, idx) => (
+    <Text key={idx} bold underline color="blue">
+      {fitText(col.label, col.width)}
+    </Text>
+  ));
+
+  const ruleWidth = Math.max(10, width - 2);
+  const rule = "─".repeat(ruleWidth);
+
+  const sectionDetail = accounts.length
+    ? `showing 1-${accounts.length} of ${accounts.length}`
+    : "empty";
+
+  return (
+    <Box flexDirection="column">
+      <Box>
+        <Text bold color="cyan">ACCOUNTS </Text>
+        <Text color="gray">{"─".repeat(Math.max(2, width - 10 - sectionDetail.length - 2))} {sectionDetail}</Text>
+      </Box>
+      <Box marginTop={1}>
+        <Row cells={headerCells} columns={columns} selected={false} />
+      </Box>
+      <Text color="gray">{rule}</Text>
+
+      {accounts.length === 0 ? (
+        <Box marginTop={1}>
+          <Text color="gray">No accounts yet. Press 'a' to add one.</Text>
+        </Box>
+      ) : (
+        accounts.map((view, idx) => {
+          const isSelected = idx === selectedIndex;
+          const isActive = state.active_account === view.account.name;
+          const color = !view.loggedIn ? "red" : isSelected ? "cyan" : "green";
+          const fiveBar = usageBar(view.usage.five_hour_pct, 8);
+          const sevenBar = usageBar(view.usage.seven_day_pct, 8);
+          const usageText = view.loggedIn ? `5h ${fiveBar}  7d ${sevenBar}` : "login needed";
+          const cells = [
+            <Text key="bar" color="magenta" bold>{isSelected ? "▌" : " "}</Text>,
+            <Text key="no" color={color} bold={isSelected}>{fitText(String(idx + 1), columns[1]!.width)}</Text>,
+            <Text key="act" color={color} bold={isSelected}>{fitText(isActive ? "Current" : "-", columns[2]!.width)}</Text>,
+            <Text key="swap" color={color} bold={isSelected}>{fitText(view.account.auto_swap ? "[x]" : "[ ]", columns[3]!.width)}</Text>,
+            <Text key="name" color={color} bold={isSelected}>{fitText(view.account.name, columns[4]!.width)}</Text>,
+            <Text key="auth" color={color} bold={isSelected}>{fitText(view.loggedIn ? "Y" : "N", columns[5]!.width)}</Text>,
+            <Text key="plan" color={color} bold={isSelected}>{fitText(view.subscriptionType ?? "-", columns[6]!.width)}</Text>,
+            <Text key="usg" color={color} bold={isSelected}>{fitText(usageText, columns[7]!.width)}</Text>,
+          ];
+          return <Row key={view.account.name} cells={cells} columns={columns} selected={isSelected} />;
+        })
+      )}
+
+      <Box marginTop={1}>
+        <Text bold color="cyan">DETAILS </Text>
+        <Text color="gray">{"─".repeat(Math.max(2, width - 10 - (selected ? selected.account.name.length : 1) - 2))} {selected ? selected.account.name : "-"}</Text>
+      </Box>
+      <Text color="gray">{rule}</Text>
+      {selected ? (
+        <Box flexDirection="column">
+          <Text color="gray">
+            {fitText(
+              `Account: ${selected.account.name}   Active: ${state.active_account === selected.account.name ? "Yes" : "No"}   Auto-swap: ${selected.account.auto_swap ? "Included" : "Excluded"}`,
+              Math.max(1, width - 2),
+            )}
+          </Text>
+          <Text color="gray">
+            {fitText(
+              `Saved login: ${selected.loggedIn ? "Yes" : "No"}   Plan: ${selected.subscriptionType ?? "-"}`,
+              Math.max(1, width - 2),
+            )}
+          </Text>
+          <Text color="gray">
+            {fitText(
+              `5h usage: ${usageBar(selected.usage.five_hour_pct, 16)}   Reset: ${formatIsoLocal(selected.usage.five_hour_reset_at)}`,
+              Math.max(1, width - 2),
+            )}
+          </Text>
+          <Text color="gray">
+            {fitText(
+              `7d usage: ${usageBar(selected.usage.seven_day_pct, 16)}   Reset: ${formatIsoLocal(selected.usage.seven_day_reset_at)}`,
+              Math.max(1, width - 2),
+            )}
+          </Text>
+          <Text color="gray">
+            {fitText(`Updated: ${formatUpdatedAt(selected.usage.cache_timestamp_ms)}`, Math.max(1, width - 2))}
+          </Text>
+        </Box>
+      ) : (
+        <Text color="gray">No account selected.</Text>
+      )}
     </Box>
   );
 }
