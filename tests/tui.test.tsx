@@ -52,10 +52,11 @@ describe("App TUI", () => {
     const frame = lastFrame() ?? "";
     expect(frame).toContain("work");
     expect(frame).toContain("side");
-    // Active account shows "Current" in the Active column.
-    expect(frame).toContain("Current");
-    // Header row shows "N" for no-login accounts.
+    // Active account shows a star marker.
+    expect(frame).toContain("★");
     expect(frame).toContain("ACCOUNTS");
+    // New layout: no-login accounts show "login needed" in the usage column.
+    expect(frame).toContain("login needed");
     unmount();
   });
 

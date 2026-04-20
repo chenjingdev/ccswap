@@ -9,6 +9,7 @@ import { AccountsScreen } from "./screens/AccountsScreen.js";
 import { SessionsScreen } from "./screens/SessionsScreen.js";
 import { InputModal } from "./modals/InputModal.js";
 import { ConfirmModal } from "./modals/ConfirmModal.js";
+import { EditAccountMenu } from "./modals/EditAccountMenu.js";
 import { useConfigState } from "./useConfigState.js";
 import { useTerminalSize } from "./useTerminalSize.js";
 import { fitText, replayLabel } from "./format.js";
@@ -16,6 +17,7 @@ import { fitText, replayLabel } from "./format.js";
 type Screen = "accounts" | "sessions";
 type Modal =
   | { kind: "add" }
+  | { kind: "edit"; name: string; autoSwap: boolean }
   | { kind: "rename"; current: string }
   | { kind: "confirm-delete"; name: string }
   | { kind: "custom-prompt" }
@@ -28,18 +30,15 @@ export interface AppProps {
 
 const ACCOUNT_SHORTCUTS: Array<[string, string]> = [
   ["Tab", "Sessions"],
+  ["Enter", "Active"],
   ["a", "Add"],
   ["l", "Login"],
-  ["r", "Rename"],
-  ["Enter", "Set active"],
-  ["Space", "Swap"],
-  ["d", "Delete"],
+  ["e", "Edit"],
   ["q", "Quit"],
 ];
 
 const SESSION_SHORTCUTS: Array<[string, string]> = [
   ["Tab", "Accounts"],
-  ["j/k", "Move"],
   ["m", "Replay mode"],
   ["p", "Custom prompt"],
   ["q", "Quit"],
@@ -57,9 +56,7 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
   const [sessions, setSessions] = useState<RuntimeSessionView[]>(() => listRuntimeSessions());
 
   useEffect(() => {
-    const t = setInterval(() => {
-      setSessions(listRuntimeSessions());
-    }, 2000);
+    const t = setInterval(() => setSessions(listRuntimeSessions()), 2000);
     return () => clearInterval(t);
   }, []);
 
@@ -69,7 +66,6 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
     return () => clearTimeout(t);
   }, [message]);
 
-  // Background usage refresh — round-robin over accounts that have a login.
   useEffect(() => {
     let cancelled = false;
     let cursor = 0;
@@ -131,16 +127,12 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
         setModal({ kind: "add" });
         return;
       }
-      if (input === "r" && selectedAccount) {
-        setModal({ kind: "rename", current: selectedAccount.account.name });
-        return;
-      }
-      if (input === "d" && selectedAccount) {
-        setModal({ kind: "confirm-delete", name: selectedAccount.account.name });
-        return;
-      }
-      if (input === " " && selectedAccount) {
-        cfg.toggleAutoSwap(selectedAccount.account.name);
+      if (input === "e" && selectedAccount) {
+        setModal({
+          kind: "edit",
+          name: selectedAccount.account.name,
+          autoSwap: selectedAccount.account.auto_swap,
+        });
         return;
       }
       if (key.return && selectedAccount) {
@@ -148,7 +140,7 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
         setMessage(
           err
             ? { text: err, kind: "err" }
-            : { text: `Active account set to '${selectedAccount.account.name}'`, kind: "ok" },
+            : { text: `Active: ${selectedAccount.account.name}`, kind: "ok" },
         );
         return;
       }
@@ -180,16 +172,12 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
 
   const clampedAccountCursor = Math.min(accountCursor, Math.max(0, cfg.accounts.length - 1));
   const clampedSessionCursor = Math.min(sessionCursor, Math.max(0, sessions.length - 1));
-  const selectedLabel =
-    screen === "accounts" && cfg.accounts.length > 0
-      ? `${clampedAccountCursor + 1}/${cfg.accounts.length}`
-      : screen === "sessions" && sessions.length > 0
-        ? `${clampedSessionCursor + 1}/${sessions.length}`
-        : "0/0";
 
-  const subtitle = `replay ${replayLabel(cfg.config.replay_mode)}  active ${cfg.state.active_account ?? "-"}  screen ${screen}  selected ${selectedLabel}`;
-  const infoText = message ? message.text : "Ready";
-  const infoColor = message ? (message.kind === "err" ? "red" : "green") : "gray";
+  const subtitleParts = [
+    `active ${cfg.state.active_account ?? "-"}`,
+    replayLabel(cfg.config.replay_mode),
+  ];
+  const subtitle = subtitleParts.join("  ·  ");
 
   const shortcuts = screen === "accounts" ? ACCOUNT_SHORTCUTS : SESSION_SHORTCUTS;
   const footerLine = "keys: " + shortcuts.map(([k, v]) => `${k} ${v}`).join("  ·  ");
@@ -197,11 +185,17 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
 
   return (
     <Box flexDirection="column" width={columns} height={rows}>
-      <Box paddingX={1} flexDirection="column">
+      <Box paddingX={1} flexDirection="row" justifyContent="space-between">
         <Text bold color="cyan">CCSWAP</Text>
-        <Text color="gray">{fitText(subtitle, Math.max(1, columns - 2))}</Text>
-        <Text color={infoColor}>{fitText(`info  ${infoText}`, Math.max(1, columns - 2))}</Text>
+        <Text color="gray">{subtitle}</Text>
       </Box>
+      {message ? (
+        <Box paddingX={1}>
+          <Text color={message.kind === "err" ? "red" : "green"}>
+            {fitText(message.text, Math.max(1, columns - 2))}
+          </Text>
+        </Box>
+      ) : null}
 
       <Box paddingX={1} flexDirection="column" flexGrow={1}>
         {screen === "accounts" ? (
@@ -242,6 +236,22 @@ export function App({ onLoginRequested, hasTty }: AppProps) {
             setModal(null);
             setMessage(err ? { text: err, kind: "err" } : { text: `Added '${name}'`, kind: "ok" });
           }}
+        />
+      ) : null}
+
+      {modal?.kind === "edit" ? (
+        <EditAccountMenu
+          name={modal.name}
+          autoSwap={modal.autoSwap}
+          onCancel={() => setModal(null)}
+          onRename={() => setModal({ kind: "rename", current: modal.name })}
+          onToggleAutoSwap={() => {
+            cfg.toggleAutoSwap(modal.name);
+            const nextState = !modal.autoSwap;
+            setModal(null);
+            setMessage({ text: `Auto-swap ${nextState ? "on" : "off"} for '${modal.name}'`, kind: "ok" });
+          }}
+          onDelete={() => setModal({ kind: "confirm-delete", name: modal.name })}
         />
       ) : null}
 
