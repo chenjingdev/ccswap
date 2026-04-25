@@ -31,9 +31,10 @@ function layoutColumns(totalWidth: number): Column[] {
   const colMark = 1;   // ▌ selection bar
   const colActive = 2; // ★ / ·
   const colPlan = 8;
+  const colUpdated = 12;
   const colAccount = Math.max(18, Math.min(32, Math.floor(inner * 0.3)));
-  const gap = 4;
-  const used = colMark + colActive + colAccount + colPlan + gap;
+  const gap = 5;
+  const used = colMark + colActive + colAccount + colPlan + colUpdated + gap;
   const colUsage = Math.max(28, inner - used);
   return [
     { label: "", width: colMark },
@@ -41,6 +42,7 @@ function layoutColumns(totalWidth: number): Column[] {
     { label: "Account", width: colAccount },
     { label: "Plan", width: colPlan },
     { label: "Usage", width: colUsage },
+    { label: "Updated", width: colUpdated },
   ];
 }
 
@@ -100,7 +102,7 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
               <Box width={columns[3]!.width} marginRight={1}>
                 <Text color="gray">{fitText(view.subscriptionType ?? "-", columns[3]!.width)}</Text>
               </Box>
-              <Box width={columns[4]!.width}>
+              <Box width={columns[4]!.width} marginRight={1}>
                 {view.loggedIn ? (
                   <Text>
                     <Text color="gray">5h </Text>
@@ -111,6 +113,9 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
                 ) : (
                   <Text color="red">login needed</Text>
                 )}
+              </Box>
+              <Box width={columns[5]!.width}>
+                <Text color="gray">{fitText(formatAgo(view.usage.cache_timestamp_ms) || "--", columns[5]!.width)}</Text>
               </Box>
             </Box>
           );

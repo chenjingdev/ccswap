@@ -21,6 +21,7 @@ export interface AppConfigData {
   claude_bin: string;
   replay_mode: ReplayMode;
   custom_prompt: string;
+  proactive_swap_threshold_pct: number | null;
 }
 
 export interface ConfigFile {
@@ -28,6 +29,13 @@ export interface ConfigFile {
   claude_bin?: string;
   replay_mode?: string;
   custom_prompt?: string;
+  proactive_swap_threshold_pct?: number | null;
+}
+
+function normalizeThreshold(value: unknown): number | null {
+  if (value === null || value === false) return null;
+  if (typeof value !== "number" || Number.isNaN(value)) return 95;
+  return Math.max(1, Math.min(100, Math.round(value)));
 }
 
 export function createAccount(name: string): AccountData {
@@ -73,6 +81,7 @@ function normalizeConfig(data: ConfigFile): AppConfigData {
     claude_bin: data.claude_bin ?? DEFAULT_CLAUDE_BIN,
     replay_mode: replay,
     custom_prompt: data.custom_prompt ?? "",
+    proactive_swap_threshold_pct: normalizeThreshold(data.proactive_swap_threshold_pct),
   };
 }
 

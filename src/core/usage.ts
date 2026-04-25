@@ -19,6 +19,7 @@ import { ensureDir } from "./fs-util.js";
 import { USAGE_CACHE_DIR } from "./paths.js";
 
 const USAGE_CACHE_TTL_MS = 5 * 60_000;
+const USAGE_STATUSLINE_CACHE_TTL_MS = 5 * 60_000;
 const USAGE_FAILURE_TTL_MS = 15_000;
 const USAGE_RATE_LIMITED_BASE_MS = 60_000;
 const USAGE_RATE_LIMITED_MAX_MS = 5 * 60_000;
@@ -40,6 +41,13 @@ export interface UsageSnapshot {
   cache_timestamp_ms: number | null;
 }
 
+export interface StatusLineRateLimitsInput {
+  rate_limits?: {
+    five_hour?: Record<string, unknown> | null;
+    seven_day?: Record<string, unknown> | null;
+  } | null;
+}
+
 function emptySnapshot(): UsageSnapshot {
   return {
     plan_name: null,
@@ -59,6 +67,7 @@ interface UsageData {
   sevenDayResetAt?: string | null;
   apiUnavailable?: boolean;
   apiError?: string;
+  source?: "oauth" | "statusline";
 }
 
 interface UsageCacheFile {
@@ -100,14 +109,39 @@ function readCacheFile(path: string): UsageCacheFile | null {
   }
 }
 
-function snapshotFromPayload(payload: UsageData | undefined, timestamp: number | null): UsageSnapshot {
+function resetHasPassed(resetAt: string | null, nowMs: number): boolean {
+  if (!resetAt) return false;
+  const resetMs = Date.parse(resetAt);
+  return Number.isFinite(resetMs) && resetMs <= nowMs;
+}
+
+function validBucket(
+  percent: unknown,
+  resetAt: unknown,
+  nowMs: number,
+): { pct: number | null; resetAt: string | null } {
+  const reset = coerceDate(resetAt);
+  if (resetHasPassed(reset, nowMs)) return { pct: null, resetAt: null };
+  return {
+    pct: coercePercent(percent),
+    resetAt: reset,
+  };
+}
+
+function snapshotFromPayload(
+  payload: UsageData | undefined,
+  timestamp: number | null,
+  nowMs = Date.now(),
+): UsageSnapshot {
   if (!payload) return { ...emptySnapshot(), cache_timestamp_ms: timestamp };
+  const fiveHour = validBucket(payload.fiveHour, payload.fiveHourResetAt, nowMs);
+  const sevenDay = validBucket(payload.sevenDay, payload.sevenDayResetAt, nowMs);
   return {
     plan_name: payload.planName ?? null,
-    five_hour_pct: coercePercent(payload.fiveHour),
-    seven_day_pct: coercePercent(payload.sevenDay),
-    five_hour_reset_at: coerceDate(payload.fiveHourResetAt),
-    seven_day_reset_at: coerceDate(payload.sevenDayResetAt),
+    five_hour_pct: fiveHour.pct,
+    seven_day_pct: sevenDay.pct,
+    five_hour_reset_at: fiveHour.resetAt,
+    seven_day_reset_at: sevenDay.resetAt,
     cache_timestamp_ms: timestamp,
   };
 }
@@ -160,7 +194,11 @@ export function readUsageCacheState(
   if (retryUntil !== null && nowMs < retryUntil) {
     return { snapshot, fresh: true };
   }
-  const ttlMs = raw.data?.apiUnavailable ? USAGE_FAILURE_TTL_MS : USAGE_CACHE_TTL_MS;
+  const ttlMs = raw.data?.source === "statusline"
+    ? USAGE_STATUSLINE_CACHE_TTL_MS
+    : raw.data?.apiUnavailable
+    ? USAGE_FAILURE_TTL_MS
+    : USAGE_CACHE_TTL_MS;
   const timestamp = snapshot.cache_timestamp_ms;
   if (timestamp === null) return { snapshot, fresh: false };
   return { snapshot, fresh: nowMs - timestamp < ttlMs };
@@ -332,6 +370,50 @@ function readUtilization(payload: Record<string, unknown>, key: string): { pct: 
   };
 }
 
+function coerceStatusLineReset(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return new Date(value * 1000).toISOString();
+  }
+  return coerceDate(value);
+}
+
+function readStatusLineWindow(
+  payload: StatusLineRateLimitsInput,
+  key: "five_hour" | "seven_day",
+): { pct: number | null; resetAt: string | null } {
+  const limits = payload.rate_limits;
+  if (!limits || typeof limits !== "object") return { pct: null, resetAt: null };
+  const bucket = limits[key];
+  if (!bucket || typeof bucket !== "object" || Array.isArray(bucket)) {
+    return { pct: null, resetAt: null };
+  }
+  return {
+    pct: coercePercent(bucket["used_percentage"]),
+    resetAt: coerceStatusLineReset(bucket["resets_at"]),
+  };
+}
+
+export function captureStatusLineUsage(
+  cachePath: string,
+  planName: string | null,
+  input: StatusLineRateLimitsInput,
+  now = Date.now(),
+): boolean {
+  const fiveHour = readStatusLineWindow(input, "five_hour");
+  const sevenDay = readStatusLineWindow(input, "seven_day");
+  if (fiveHour.pct === null && sevenDay.pct === null) return false;
+  const result: UsageData = {
+    planName,
+    fiveHour: fiveHour.pct,
+    sevenDay: sevenDay.pct,
+    fiveHourResetAt: fiveHour.resetAt,
+    sevenDayResetAt: sevenDay.resetAt,
+    source: "statusline",
+  };
+  writeCacheFile(cachePath, { data: result, timestamp: now, lastGoodData: result });
+  return true;
+}
+
 export async function refreshUsageCache(
   cachePath: string,
   lockPath: string,
@@ -384,6 +466,7 @@ export async function refreshUsageCache(
         sevenDayResetAt: null,
         apiUnavailable: true,
         apiError: apiResult.error ?? "unknown",
+        source: "oauth",
       };
       const lastGood = readLastGood(cachePath);
       const payload: UsageCacheFile = {
@@ -405,6 +488,7 @@ export async function refreshUsageCache(
       sevenDay: sevenDay.pct,
       fiveHourResetAt: fiveHour.resetAt,
       sevenDayResetAt: sevenDay.resetAt,
+      source: "oauth",
     };
     writeCacheFile(cachePath, { data: result, timestamp: now, lastGoodData: result });
     return true;
@@ -432,4 +516,18 @@ export async function isAccountUsageExhausted(account: AccountData, forceRefresh
   if (forceRefresh) await refreshAccountUsage(account, true);
   const snapshot = loadUsageCache(accountUsageCachePath(account));
   return snapshot.five_hour_pct === 100 || snapshot.seven_day_pct === 100;
+}
+
+export async function isAccountUsageAtOrAbove(
+  account: AccountData,
+  thresholdPct: number,
+  forceRefresh = false,
+): Promise<boolean> {
+  if (forceRefresh) await refreshAccountUsage(account, true);
+  const threshold = Math.max(1, Math.min(100, Math.round(thresholdPct)));
+  const snapshot = loadUsageCache(accountUsageCachePath(account));
+  return (
+    (snapshot.five_hour_pct !== null && snapshot.five_hour_pct >= threshold) ||
+    (snapshot.seven_day_pct !== null && snapshot.seven_day_pct >= threshold)
+  );
 }

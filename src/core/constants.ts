@@ -22,8 +22,6 @@ export const LIMIT_PATTERNS: RegExp[] = [
   /\b429 too many requests\b/i,
 ];
 
-export const RESUME_HINT_PATTERN = /claude\s+--resume\s+([0-9a-f-]{8,})/gi;
-
 export const OPTIONS_WITH_VALUE = new Set<string>([
   "--add-dir",
   "--agent",

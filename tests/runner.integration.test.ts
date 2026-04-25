@@ -37,6 +37,7 @@ describe("runClaude integration", () => {
     const elapsed = Date.now() - start;
 
     expect(result.limitHit).toBe(true);
+    expect(result.proactiveSwap).toBe(false);
     // should escalate to SIGKILL within ~3.5s (grace 1s + term 1s + kill 1.5s buffer)
     expect(elapsed).toBeLessThan(6000);
     rmSync(tmp, { recursive: true, force: true });
@@ -57,6 +58,7 @@ describe("runClaude integration", () => {
     });
 
     expect(result.limitHit).toBe(false);
+    expect(result.proactiveSwap).toBe(false);
     expect(result.exitCode).toBe(0);
     rmSync(tmp, { recursive: true, force: true });
   });
@@ -76,6 +78,30 @@ describe("runClaude integration", () => {
     });
 
     expect(result.limitHit).toBe(false);
+    expect(result.proactiveSwap).toBe(false);
     rmSync(tmp, { recursive: true, force: true });
   });
+
+  it("exits for a proactive account swap without a limit message", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ccswap-runner-"));
+    const script = `console.log("idle"); setTimeout(() => {}, 20000);`;
+
+    const start = Date.now();
+    const result = await runClaude({
+      claudeBin: NODE_BIN,
+      args: nodeArgs(script),
+      cwd: tmp,
+      env: { ...process.env },
+      accountName: "fake",
+      shouldArmLimit: () => true,
+      shouldConfirmLimit: () => true,
+      shouldProactivelySwap: () => true,
+    });
+    const elapsed = Date.now() - start;
+
+    expect(result.limitHit).toBe(false);
+    expect(result.proactiveSwap).toBe(true);
+    expect(elapsed).toBeLessThan(7000);
+    rmSync(tmp, { recursive: true, force: true });
+  }, 10000);
 });

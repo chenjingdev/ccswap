@@ -86,7 +86,7 @@ describe("config + accounts", () => {
 
     const raw = JSON.parse(readFileSync(pathsMod.CONFIG_PATH, "utf-8")) as Record<string, unknown>;
     expect(Object.keys(raw).sort()).toEqual(
-      ["accounts", "claude_bin", "custom_prompt", "replay_mode"].sort(),
+      ["accounts", "claude_bin", "custom_prompt", "proactive_swap_threshold_pct", "replay_mode"].sort(),
     );
     const account = (raw["accounts"] as Array<Record<string, unknown>>)[0]!;
     expect(Object.keys(account).sort()).toEqual(
@@ -107,6 +107,7 @@ describe("config + accounts", () => {
     const configMod = await import("../src/core/config.js");
     const cfg = configMod.loadConfig();
     expect(cfg.accounts[0]?.auto_swap).toBe(false);
+    expect(cfg.proactive_swap_threshold_pct).toBe(95);
   });
 
   it("parses stored Claude credentials JSON shape", async () => {

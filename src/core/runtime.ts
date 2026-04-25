@@ -24,10 +24,6 @@ export function runtimeStatePath(runId: string): string {
   return join(RUNTIME_DIR, `${runId}.json`);
 }
 
-export function runtimeSettingsPath(runId: string): string {
-  return join(RUNTIME_DIR, `${runId}.settings.json`);
-}
-
 function defaultState(runId: string): SessionRuntimeState {
   return {
     run_id: runId,
@@ -97,7 +93,13 @@ export function processIsAlive(pid: number | null | undefined): boolean {
 }
 
 function removeRuntimeArtifacts(runId: string): void {
-  for (const path of [runtimeStatePath(runId), runtimeSettingsPath(runId)]) {
+  // Legacy .settings.json from the old hook-injection strategy is cleaned up
+  // alongside the state file in case an older ccswap left one behind.
+  const paths = [
+    runtimeStatePath(runId),
+    join(RUNTIME_DIR, `${runId}.settings.json`),
+  ];
+  for (const path of paths) {
     try {
       rmSync(path, { force: true });
     } catch {

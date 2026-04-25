@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   loadUsageCache,
+  captureStatusLineUsage,
   parseUsageCache,
   readUsageCacheState,
   refreshUsageCache,
@@ -67,7 +68,7 @@ describe("parseUsageCache", () => {
   it("reads fresh data payload", () => {
     const path = join(tmp, "c.json");
     writeCache(path, {
-      data: { planName: "Max", fiveHour: 50, sevenDay: 30, fiveHourResetAt: "2026-04-20T00:00:00Z" },
+      data: { planName: "Max", fiveHour: 50, sevenDay: 30, fiveHourResetAt: "2999-04-20T00:00:00Z" },
       timestamp: 1710000000000,
     });
     const snap = parseUsageCache(path);
@@ -75,7 +76,7 @@ describe("parseUsageCache", () => {
     expect(snap.five_hour_pct).toBe(50);
     expect(snap.seven_day_pct).toBe(30);
     expect(snap.cache_timestamp_ms).toBe(1710000000000);
-    expect(snap.five_hour_reset_at).toBe("2026-04-20T00:00:00Z");
+    expect(snap.five_hour_reset_at).toBe("2999-04-20T00:00:00Z");
   });
 
   it("falls back to lastGoodData when rate-limited", () => {
@@ -109,6 +110,17 @@ describe("parseUsageCache", () => {
     expect(stale?.fresh).toBe(false);
   });
 
+  it("treats recent statusline captures as fresh", () => {
+    const path = join(tmp, "c.json");
+    const now = Date.now();
+    writeCache(path, {
+      data: { source: "statusline", planName: "Max", fiveHour: 20, sevenDay: 15 },
+      timestamp: now,
+    });
+    expect(readUsageCacheState(path, now + 4 * 60_000)?.fresh).toBe(true);
+    expect(readUsageCacheState(path, now + 6 * 60_000)?.fresh).toBe(false);
+  });
+
   it("clamps percent to [0,100]", () => {
     const path = join(tmp, "c.json");
     writeCache(path, {
@@ -119,6 +131,75 @@ describe("parseUsageCache", () => {
     expect(snap.five_hour_pct).toBe(100);
     expect(snap.seven_day_pct).toBe(0);
   });
+
+  it("drops buckets whose reset time has already passed", () => {
+    const path = join(tmp, "c.json");
+    writeCache(path, {
+      data: {
+        planName: "Max",
+        fiveHour: 88,
+        sevenDay: 70,
+        fiveHourResetAt: "2999-04-20T00:00:00Z",
+        sevenDayResetAt: "2000-04-20T00:00:00Z",
+      },
+      timestamp: Date.now(),
+    });
+    const snap = parseUsageCache(path);
+    expect(snap.five_hour_pct).toBe(88);
+    expect(snap.five_hour_reset_at).toBe("2999-04-20T00:00:00Z");
+    expect(snap.seven_day_pct).toBeNull();
+    expect(snap.seven_day_reset_at).toBeNull();
+  });
+
+  it("drops expired lastGoodData buckets when rate-limited", () => {
+    const path = join(tmp, "c.json");
+    writeCache(path, {
+      data: { apiError: "rate-limited", apiUnavailable: true },
+      lastGoodData: {
+        planName: "Max",
+        fiveHour: 0,
+        sevenDay: 70,
+        sevenDayResetAt: "2000-04-20T00:00:00Z",
+      },
+      timestamp: Date.now(),
+    });
+    const snap = parseUsageCache(path);
+    expect(snap.five_hour_pct).toBe(0);
+    expect(snap.seven_day_pct).toBeNull();
+    expect(snap.seven_day_reset_at).toBeNull();
+  });
+
+  it("captures Claude Code statusline rate limits", () => {
+    const path = join(tmp, "c.json");
+    const ok = captureStatusLineUsage(
+      path,
+      "Max",
+      {
+        rate_limits: {
+          five_hour: { used_percentage: 23.5, resets_at: 32503680000 },
+          seven_day: { used_percentage: 41.2, resets_at: 32503766400 },
+        },
+      },
+      1710000000000,
+    );
+    expect(ok).toBe(true);
+    const snap = parseUsageCache(path);
+    expect(snap.plan_name).toBe("Max");
+    expect(snap.five_hour_pct).toBe(24);
+    expect(snap.seven_day_pct).toBe(41);
+    expect(snap.cache_timestamp_ms).toBe(1710000000000);
+    expect(snap.five_hour_reset_at).toBe("3000-01-01T00:00:00.000Z");
+    const state = readUsageCacheState(path, 1710000000000 + 60_000);
+    expect(state?.fresh).toBe(true);
+  });
+
+  it("ignores statusline input without rate limits", () => {
+    const path = join(tmp, "c.json");
+    const ok = captureStatusLineUsage(path, "Max", {}, 1710000000000);
+    expect(ok).toBe(false);
+    expect(loadUsageCache(path).cache_timestamp_ms).toBeNull();
+  });
+
 });
 
 describe("refreshUsageCache (mocked fetch)", () => {
@@ -141,8 +222,8 @@ describe("refreshUsageCache (mocked fetch)", () => {
     globalThis.fetch = vi.fn(async () =>
       new Response(
         JSON.stringify({
-          five_hour: { utilization: 87, resets_at: "2026-04-20T05:00:00Z" },
-          seven_day: { utilization: 12, resets_at: "2026-04-27T05:00:00Z" },
+          five_hour: { utilization: 87, resets_at: "2999-04-20T05:00:00Z" },
+          seven_day: { utilization: 12, resets_at: "2999-04-27T05:00:00Z" },
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       ),

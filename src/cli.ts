@@ -4,10 +4,20 @@ import { normalizeCliArgs } from "./claude/args.js";
 import { runAccountAdd, runAccountList, runAccountRemove } from "./commands/account.js";
 import { runClaudeCommand } from "./commands/claude.js";
 import { runDashboard } from "./commands/dashboard.js";
-import { runHookPromptSubmit, runHookSessionStart } from "./commands/hook.js";
 import { runInit } from "./commands/init.js";
 import { runLogin } from "./commands/login.js";
 import { runUse } from "./commands/use.js";
+import { runUsageCapture } from "./commands/usage-capture.js";
+
+function optionValue(argv: string[], name: string): string | undefined {
+  const prefix = `${name}=`;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === name) return argv[i + 1];
+    if (arg?.startsWith(prefix)) return arg.slice(prefix.length);
+  }
+  return undefined;
+}
 
 function build(): Command {
   const program = new Command();
@@ -76,27 +86,23 @@ function build(): Command {
       process.exit(await runClaudeCommand({ args: claudeArgs }));
     });
 
-  const hook = program.command("hook", { hidden: true });
-  hook
-    .command("session-start")
-    .requiredOption("--run-id <id>")
-    .requiredOption("--state-path <path>")
-    .action(async (options: { runId: string; statePath: string }) => {
-      process.exit(await runHookSessionStart(options.runId, options.statePath));
-    });
-  hook
-    .command("prompt-submit")
-    .requiredOption("--run-id <id>")
-    .requiredOption("--state-path <path>")
-    .action(async (options: { runId: string; statePath: string }) => {
-      process.exit(await runHookPromptSubmit(options.runId, options.statePath));
-    });
-
   program
     .command("dashboard")
     .description("open the interactive TUI dashboard")
     .action(async () => {
       process.exit(await runDashboard());
+    });
+
+  program
+    .command("usage-capture")
+    .description("capture Claude Code statusline rate limits")
+    .option("--account <name>", "account name")
+    .option("--passthrough <base64>", "base64-encoded statusline command to run after capture")
+    .action((options: { account?: string; passthrough?: string }) => {
+      const account = options.account ?? optionValue(process.argv, "--account");
+      const passthrough = options.passthrough ?? optionValue(process.argv, "--passthrough");
+      if (!account) process.exit(0);
+      process.exit(runUsageCapture({ account, passthrough }));
     });
 
   program.action(async () => {
@@ -108,6 +114,11 @@ function build(): Command {
 
 const program = build();
 const rawArgv = process.argv.slice(2);
+if (rawArgv[0] === "usage-capture") {
+  const account = optionValue(rawArgv, "--account");
+  const passthrough = optionValue(rawArgv, "--passthrough");
+  process.exit(account ? runUsageCapture({ account, passthrough }) : 0);
+}
 const normalized = normalizeCliArgs(rawArgv);
 program.parseAsync([process.argv[0]!, process.argv[1]!, ...normalized]).catch((err) => {
   console.error(err);

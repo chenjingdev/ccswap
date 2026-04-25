@@ -1,8 +1,11 @@
+import { existsSync, mkdirSync, watch, type FSWatcher } from "node:fs";
+
 import { Box, Text, useApp, useInput } from "ink";
 import { useEffect, useState } from "react";
 
 import { REPLAY_MODES } from "../core/constants.js";
 import { saveConfig } from "../core/config.js";
+import { CONFIG_DIR, RUNTIME_DIR, USAGE_CACHE_DIR } from "../core/paths.js";
 import { listRuntimeSessions, type RuntimeSessionView } from "../core/runtime.js";
 import { refreshAccountUsage } from "../core/usage.js";
 import { AccountsScreen } from "./screens/AccountsScreen.js";
@@ -55,16 +58,47 @@ export function App({ onLoginRequested, onAddRequested, hasTty }: AppProps) {
   const [sessions, setSessions] = useState<RuntimeSessionView[]>(() => listRuntimeSessions());
 
   useEffect(() => {
-    const t = setInterval(() => setSessions(listRuntimeSessions()), 2000);
-    return () => clearInterval(t);
-  }, []);
-
-  useEffect(() => {
     if (!message) return;
     const t = setTimeout(() => setMessage(null), 4000);
     return () => clearTimeout(t);
   }, [message]);
 
+  // Event-driven refresh: fs.watch on ccswap's own state dirs so the UI only
+  // rebuilds when disk actually changes. Mirrors claude-hud's "no polling,
+  // react to external signals" philosophy.
+  useEffect(() => {
+    for (const dir of [CONFIG_DIR, RUNTIME_DIR, USAGE_CACHE_DIR]) {
+      if (!existsSync(dir)) {
+        try { mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
+      }
+    }
+
+    const watchers: FSWatcher[] = [];
+    const safeWatch = (path: string, handler: () => void): void => {
+      try {
+        watchers.push(watch(path, { persistent: false }, handler));
+      } catch {
+        // fs.watch may reject on platforms without inotify/FSEvents support;
+        // the rotation tick below still pulls fresh data on its own cadence.
+      }
+    };
+
+    safeWatch(CONFIG_DIR, () => cfg.reload());
+    safeWatch(RUNTIME_DIR, () => {
+      setSessions(listRuntimeSessions());
+    });
+    safeWatch(USAGE_CACHE_DIR, () => cfg.reload());
+
+    return () => {
+      for (const w of watchers) {
+        try { w.close(); } catch { /* ignore */ }
+      }
+    };
+  }, [cfg.reload]);
+
+  // API refresh rotation: statusLine rate_limits is the primary live source
+  // during ccswap-run Claude sessions. This slower OAuth pass is just a
+  // fallback for accounts without recent statusLine snapshots.
   useEffect(() => {
     let cancelled = false;
     let cursor = 0;
@@ -76,18 +110,18 @@ export function App({ onLoginRequested, onAddRequested, hasTty }: AppProps) {
       if (!target) return;
       try {
         await refreshAccountUsage(target.account, false);
-        if (!cancelled) cfg.reload();
       } catch {
         // ignore
       }
     };
-    void tick();
-    const id = setInterval(() => void tick(), 10_000);
+    const id = setInterval(() => {
+      if (!cancelled) void tick();
+    }, 60_000);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [cfg.accounts.length, cfg.reload]);
+  }, [cfg.accounts.length]);
 
   const selectedAccount = cfg.accounts[accountCursor];
 

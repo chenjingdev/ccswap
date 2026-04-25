@@ -92,6 +92,12 @@ When a limit is confirmed:
 3. Claude is relaunched with `--resume <session-id>` and (depending on replay
    mode) the last prompt appended, so the conversation continues.
 
+By default, ccswap also watches Claude Code's statusline usage snapshot and
+switches accounts before the hard limit once either the five-hour or seven-day
+bucket reaches 95%. This proactive swap resumes the same session without
+replaying the last prompt, so the next prompt starts on the fresh account. Set
+`proactive_swap_threshold_pct` to another percentage, or `null` to disable it.
+
 ## Paths
 
 - `~/.config/ccswap/config.json` — accounts + settings
@@ -106,7 +112,8 @@ On Windows the root is `%APPDATA%\ccswap`.
 ## Config file compatibility
 
 The JSON field names (`accounts`, `claude_bin`, `replay_mode`, `custom_prompt`,
-`keychain_service`, `keychain_account`, `auto_swap`, `claude_config_dir`) are
+`proactive_swap_threshold_pct`, `keychain_service`, `keychain_account`,
+`auto_swap`, `claude_config_dir`) are
 compatible with the legacy Python implementation, so an existing
 `~/.config/ccswap/config.json` loads into the TS version with no migration.
 Legacy `enabled` is read as `auto_swap`. The TS version adds a nullable
