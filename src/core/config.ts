@@ -2,14 +2,12 @@ import { DEFAULT_CLAUDE_BIN, isReplayMode, type ReplayMode } from "./constants.j
 import { readJson, writeJson } from "./fs-util.js";
 import {
   CONFIG_PATH,
-  defaultAccountDir,
   defaultKeychainAccount,
   defaultKeychainService,
 } from "./paths.js";
 
 export interface AccountData {
   name: string;
-  claude_config_dir: string;
   auto_swap: boolean;
   keychain_service: string;
   keychain_account: string;
@@ -25,7 +23,7 @@ export interface AppConfigData {
 }
 
 export interface ConfigFile {
-  accounts?: Array<Partial<AccountData> & { name: string; enabled?: boolean }>;
+  accounts?: Array<Partial<AccountData> & { name: string; enabled?: boolean; claude_config_dir?: string }>;
   claude_bin?: string;
   replay_mode?: string;
   custom_prompt?: string;
@@ -41,7 +39,6 @@ function normalizeThreshold(value: unknown): number | null {
 export function createAccount(name: string): AccountData {
   return {
     name,
-    claude_config_dir: defaultAccountDir(name),
     auto_swap: true,
     keychain_service: defaultKeychainService(name),
     keychain_account: defaultKeychainAccount(),
@@ -49,13 +46,11 @@ export function createAccount(name: string): AccountData {
   };
 }
 
-function normalizeAccount(raw: Partial<AccountData> & { name: string; enabled?: boolean }): AccountData {
+function normalizeAccount(raw: Partial<AccountData> & { name: string; enabled?: boolean; claude_config_dir?: string }): AccountData {
   const name = raw.name;
-  const configDir = raw.claude_config_dir ?? defaultAccountDir(name);
   const autoSwap = raw.auto_swap ?? raw.enabled ?? true;
   return {
     name,
-    claude_config_dir: configDir,
     auto_swap: Boolean(autoSwap),
     keychain_service: raw.keychain_service || defaultKeychainService(name),
     keychain_account: raw.keychain_account || defaultKeychainAccount(),
@@ -64,14 +59,9 @@ function normalizeAccount(raw: Partial<AccountData> & { name: string; enabled?: 
 }
 
 function normalizeConfig(data: ConfigFile): AppConfigData {
-  const seenDirs = new Set<string>();
   const accounts: AccountData[] = [];
   for (const rawAccount of data.accounts ?? []) {
     const account = normalizeAccount(rawAccount);
-    if (seenDirs.has(account.claude_config_dir)) {
-      account.claude_config_dir = defaultAccountDir(account.name);
-    }
-    seenDirs.add(account.claude_config_dir);
     accounts.push(account);
   }
   const replayRaw = data.replay_mode ?? "last_prompt";

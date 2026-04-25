@@ -19,7 +19,6 @@ function configRoot(): string {
 export const CONFIG_DIR = configRoot();
 export const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 export const STATE_PATH = join(CONFIG_DIR, "state.json");
-export const ACCOUNTS_DIR = join(CONFIG_DIR, "accounts");
 export const LOG_PATH = join(CONFIG_DIR, "ccswap.log");
 export const RUNTIME_DIR = join(CONFIG_DIR, "runtime");
 export const USAGE_CACHE_DIR = join(CONFIG_DIR, "usage-cache");
@@ -27,10 +26,6 @@ export const USAGE_CACHE_DIR = join(CONFIG_DIR, "usage-cache");
 export function sanitizeAccountName(name: string): string {
   const safe = name.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
   return safe || "account";
-}
-
-export function defaultAccountDir(name: string): string {
-  return join(ACCOUNTS_DIR, sanitizeAccountName(name), "claude");
 }
 
 export function defaultKeychainService(name: string): string {

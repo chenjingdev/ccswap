@@ -18,12 +18,11 @@ describe("paths", () => {
     delete process.env.CCSWAP_CONFIG_DIR;
   });
 
-  it("sanitizes account names for directory and keychain service", async () => {
+  it("sanitizes account names for keychain service", async () => {
     const mod = await import("../src/core/paths.js");
     expect(mod.sanitizeAccountName("hello world!")).toBe("hello-world");
     expect(mod.sanitizeAccountName("---")).toBe("account");
     expect(mod.defaultKeychainService("my acc/1")).toBe("ccswap-account:my-acc-1");
-    expect(mod.defaultAccountDir("my acc/1")).toMatch(/accounts[\\/]my-acc-1[\\/]claude$/);
   });
 
   it("resolves config paths under CCSWAP_CONFIG_DIR", async () => {
@@ -90,7 +89,7 @@ describe("config + accounts", () => {
     );
     const account = (raw["accounts"] as Array<Record<string, unknown>>)[0]!;
     expect(Object.keys(account).sort()).toEqual(
-      ["auto_swap", "claude_config_dir", "email", "keychain_account", "keychain_service", "name"].sort(),
+      ["auto_swap", "email", "keychain_account", "keychain_service", "name"].sort(),
     );
   });
 
@@ -108,6 +107,23 @@ describe("config + accounts", () => {
     const cfg = configMod.loadConfig();
     expect(cfg.accounts[0]?.auto_swap).toBe(false);
     expect(cfg.proactive_swap_threshold_pct).toBe(95);
+  });
+
+  it("ignores legacy claude_config_dir fields instead of re-saving account folders", async () => {
+    const pathsMod = await import("../src/core/paths.js");
+    const { writeJson } = await import("../src/core/fs-util.js");
+    writeJson(pathsMod.CONFIG_PATH, {
+      accounts: [{ name: "legacy", claude_config_dir: "/tmp/old-claude-dir" }],
+    });
+
+    const configMod = await import("../src/core/config.js");
+    const cfg = configMod.loadConfig();
+    expect("claude_config_dir" in cfg.accounts[0]!).toBe(false);
+    configMod.saveConfig(cfg);
+    const raw = JSON.parse(readFileSync(pathsMod.CONFIG_PATH, "utf-8")) as {
+      accounts: Array<Record<string, unknown>>;
+    };
+    expect(raw.accounts[0]).not.toHaveProperty("claude_config_dir");
   });
 
   it("parses stored Claude credentials JSON shape", async () => {

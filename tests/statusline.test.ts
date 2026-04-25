@@ -55,7 +55,6 @@ describe("statusline usage capture settings", () => {
     );
     const account: AccountData = {
       name: "work@example.com",
-      claude_config_dir: join(tmp, "claude"),
       auto_swap: true,
       keychain_service: "service",
       keychain_account: "account",
@@ -83,7 +82,6 @@ describe("statusline usage capture settings", () => {
         accounts: [
           {
             name: accountName,
-            claude_config_dir: join(tmp, "claude"),
             auto_swap: true,
             keychain_service: "service",
             keychain_account: "account",

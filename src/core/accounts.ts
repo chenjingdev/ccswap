@@ -1,26 +1,6 @@
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
-
 import type { AccountData, AppConfigData } from "./config.js";
 import { createAccount, findAccount, saveConfig } from "./config.js";
 import { deleteAccountCredential, getAccountCredential } from "./credentials.js";
-
-const CLAUDE_CONFIG_SUBDIRS = [
-  "logs",
-  "projects",
-  "todos",
-  "shell-snapshots",
-  "file-history",
-  "debug",
-  "session-env",
-];
-
-export function ensureAccountDir(account: AccountData): void {
-  mkdirSync(account.claude_config_dir, { recursive: true });
-  for (const sub of CLAUDE_CONFIG_SUBDIRS) {
-    mkdirSync(join(account.claude_config_dir, sub), { recursive: true });
-  }
-}
 
 export function addAccount(config: AppConfigData, name: string): AccountData {
   if (findAccount(config, name)) {
@@ -29,7 +9,6 @@ export function addAccount(config: AppConfigData, name: string): AccountData {
   const account = createAccount(name);
   config.accounts.push(account);
   saveConfig(config);
-  ensureAccountDir(account);
   return account;
 }
 

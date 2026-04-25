@@ -3,8 +3,8 @@
 Multi-account Claude Code switcher with auto-swap on limit.
 
 `ccswap` manages multiple Claude subscription logins, wraps `claude` in a PTY,
-watches for "limit reached" style messages, and rotates to the next healthy
-account automatically — resuming the same Claude session with your last prompt.
+watches usage and "limit reached" style messages, and rotates to the next
+healthy account automatically — resuming the same Claude session.
 
 ## Status
 
@@ -81,9 +81,10 @@ the first login. Only the OAuth credential rotates per account:
 - Windows → Credential Manager
 
 When `ccswap claude` spawns `claude`, it injects a `--settings` file that
-registers `SessionStart` and `UserPromptSubmit` hooks. Those hooks call back
-into `ccswap hook ...` to record the Claude session id and the last submitted
-prompt. Output is scanned for limit patterns in real time.
+wraps Claude Code's `statusLine` command so ccswap can cache live usage
+snapshots. ccswap tracks the active session and last submitted prompt by
+watching Claude Code's shared transcript files under `~/.claude/projects`.
+Output is scanned for limit patterns in real time.
 
 When a limit is confirmed:
 
@@ -103,9 +104,7 @@ replaying the last prompt, so the next prompt starts on the fresh account. Set
 - `~/.config/ccswap/config.json` — accounts + settings
 - `~/.config/ccswap/state.json` — active / last account
 - `~/.config/ccswap/runtime/` — per-run session state + hook settings
-- `~/.config/ccswap/accounts/<name>/claude/` — vestigial per-account dir
-  (still created for legacy config compatibility, but no longer used at
-  launch since `~/.claude` is shared)
+- `~/.config/ccswap/usage-cache/` — per-account usage snapshots
 
 On Windows the root is `%APPDATA%\ccswap`.
 
@@ -113,12 +112,11 @@ On Windows the root is `%APPDATA%\ccswap`.
 
 The JSON field names (`accounts`, `claude_bin`, `replay_mode`, `custom_prompt`,
 `proactive_swap_threshold_pct`, `keychain_service`, `keychain_account`,
-`auto_swap`, `claude_config_dir`) are
-compatible with the legacy Python implementation, so an existing
-`~/.config/ccswap/config.json` loads into the TS version with no migration.
-Legacy `enabled` is read as `auto_swap`. The TS version adds a nullable
-`email` field per account, populated from `~/.claude.json`'s `oauthAccount`
-on successful login; it is ignored by the Python code.
+`auto_swap`) are used by the TypeScript implementation. Existing configs that
+still contain legacy `claude_config_dir` fields continue to load, but ccswap no
+longer creates or writes per-account Claude config folders. Legacy `enabled` is
+read as `auto_swap`. The TS version adds a nullable `email` field per account,
+populated from `~/.claude.json`'s `oauthAccount` on successful login.
 
 ## Tests
 
