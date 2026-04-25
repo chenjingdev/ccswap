@@ -76,8 +76,9 @@ Recommended first experiment:
 Initial implementation:
 
 - `ccswap token-probe <account>` reads the saved ccswap account credential, parses `claudeAiOauth.accessToken`, and runs `claude auth status --json` with `CLAUDE_CODE_OAUTH_TOKEN` set only for that child process.
-- `ccswap token-probe <account> --infer` additionally runs `claude -p "Return exactly ok"` after auth status succeeds.
-- Normal `ccswap run` / `ccswap claude` launches still use Keychain-copy activation until refresh behavior is proven.
+- `ccswap token-probe <account> --infer` additionally runs `claude -p "Return exactly ok"` from a scratch cwd after auth status succeeds.
+- `auth_mode` now supports `keychain_copy` and experimental `oauth_env`. Default remains `keychain_copy`.
+- In `oauth_env` mode, normal `ccswap run` / `ccswap claude` launches inject the selected account's `CLAUDE_CODE_OAUTH_TOKEN` instead of mutating Claude Code's standard credential.
 
 Open risk:
 
@@ -131,6 +132,141 @@ Suggested proxy experiment:
 
 3. Once request capture is stable, add upstream pass-through.
 4. Once pass-through is stable, replace upstream `Authorization` from the selected ccswap account credential.
+
+Initial implementation:
+
+- `ccswap proxy --probe` starts a capture-only HTTP server bound to `127.0.0.1` on an ephemeral port.
+- The probe launches `claude -p "Return exactly ok"` with `ANTHROPIC_BASE_URL` pointed at the capture server and `ANTHROPIC_AUTH_TOKEN=probe-token`.
+- It reports whether `HEAD /` and `POST /v1/messages?beta=true` were observed, redacts auth-like values, records whether `x-claude-code-session-id` was present, and records the request body's `stream` flag when JSON is available.
+- It does not implement upstream pass-through or account routing yet.
+
+Proxy-only work breakdown:
+
+1. CLI surface
+   - Add `ccswap proxy --probe`.
+   - Add `--upstream` only after capture-only mode works.
+   - Add `--account <name>` only after upstream pass-through works.
+   - Add `--json` only if another tool needs machine-readable probe output.
+   - Keep proxy commands experimental and separate from normal `ccswap claude`.
+
+2. Capture server
+   - Bind to `127.0.0.1`, never `0.0.0.0`.
+   - Use an ephemeral port by default.
+   - Respond `200` to `HEAD /`.
+   - Capture `POST /v1/messages?beta=true`.
+   - Capture unknown routes without crashing; report them as unsupported.
+   - Stop the server when the child Claude process exits or the probe times out.
+   - Add a hard timeout so `ccswap proxy --probe` cannot hang forever.
+
+3. Probe child launch
+   - Resolve the real Claude binary through existing config.
+   - Spawn `claude -p "Return exactly ok"` for the probe.
+   - Set `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` only for the child process.
+   - Set a fake `ANTHROPIC_AUTH_TOKEN=probe-token` only for capture mode.
+   - Use a scratch trusted cwd for probe execution.
+   - Preserve the parent environment except for auth/base-url overrides that are intentional.
+
+4. Request inspection
+   - Record method and path.
+   - Record whether `authorization` was present, but never its value.
+   - Record whether `x-api-key` was present, but never its value.
+   - Record whether `x-claude-code-session-id` was present.
+   - Record `anthropic-version`.
+   - Record presence of `anthropic-beta` and whether it includes OAuth-related beta values; do not require an exact full string unless a test fixture controls it.
+   - Parse JSON bodies when possible.
+   - Record whether the request body has `stream: true`.
+   - Record model name and max token fields only if useful and non-sensitive.
+
+5. Redaction and logging
+   - Redact `authorization`, `x-api-key`, cookies, and any token-like values.
+   - Do not print full request bodies by default.
+   - If a debug flag is added, keep auth redaction mandatory.
+   - Ensure thrown errors and test snapshots cannot include raw token values.
+
+6. Capture-mode success criteria
+   - `HEAD /` observed.
+   - `POST /v1/messages?beta=true` observed.
+   - Claude child actually used `ANTHROPIC_BASE_URL`.
+   - Auth-like header was present in the request.
+   - Session header was present or explicitly reported missing.
+   - Probe exits with a clear non-zero status if no POST is observed.
+
+7. Upstream pass-through
+   - Implement only after capture-mode tests pass.
+   - Forward to `https://api.anthropic.com`.
+   - Preserve path and query string exactly.
+   - Preserve required Anthropic headers:
+     - `anthropic-version`
+     - `anthropic-beta`
+     - `x-claude-code-session-id`
+     - `x-app`
+   - Preserve method and body.
+   - Strip hop-by-hop headers.
+   - Do not forward the capture-mode fake token to upstream.
+   - Add a fake upstream test server before trying real Anthropic traffic.
+
+8. SSE streaming
+   - Support streaming response pass-through without buffering the full response.
+   - Preserve `content-type: text/event-stream` when upstream returns it.
+   - Pipe chunks through with backpressure.
+   - Handle upstream aborts and child disconnects cleanly.
+   - Test a fake SSE stream with multiple events.
+   - Confirm Claude Code does not fall back to non-streaming because of proxy formatting.
+
+9. Non-streaming fallback
+   - Support ordinary JSON responses as well as SSE.
+   - Forward upstream status codes.
+   - Forward Anthropic-compatible error bodies.
+   - Preserve enough headers for Claude Code retry/error handling.
+
+10. Account auth replacement
+    - Start only after pass-through works with a fake upstream.
+    - Load selected ccswap account credential in memory.
+    - Parse `claudeAiOauth.accessToken` without logging it.
+    - Replace upstream `Authorization` with `Bearer <selected access token>`.
+    - Remove incoming `x-api-key` if the upstream request should use OAuth bearer auth.
+    - Keep using the stored account's usage cache attribution.
+    - Do not call `activateAccountCredential()` in proxy account-routing mode.
+
+11. Session routing
+    - Use `x-claude-code-session-id` as the primary session key.
+    - Maintain a map from Claude session id to ccswap account name.
+    - Decide what to do when the session header is absent:
+      - fail closed for account-routing mode, or
+      - route to the active account with a warning in probe-only mode.
+    - Persist routing in runtime or daemon state only if normal runs start using the proxy.
+
+12. Usage and swap integration
+    - Keep `/api/oauth/usage` polling independent of proxy message routing at first.
+    - Confirm usage cache updates for the selected ccswap account.
+    - Use the existing proactive threshold to decide when a session should move to another account.
+    - In proxy mode, prefer switching the session-to-account map before the next request instead of killing Claude.
+    - If a request is already streaming, wait until it finishes before changing the route for that session.
+
+13. Security constraints
+    - Localhost only.
+    - No token values in logs.
+    - No request-body logging by default.
+    - No persistent proxy auth cache unless encrypted or already stored in OS credential store.
+    - Treat proxy mode as experimental until it survives streaming and account-routing tests.
+
+14. Tests
+    - Unit test route handling for `HEAD /`.
+    - Unit test capture of `POST /v1/messages?beta=true`.
+    - Unit test auth redaction.
+    - Unit test timeout behavior.
+    - Integration test pass-through with a fake upstream JSON response.
+    - Integration test pass-through with a fake upstream SSE response.
+    - Integration test account auth replacement without exposing token values.
+    - Keep real Anthropic calls out of automated tests.
+
+15. Manual verification
+    - Run capture-only `ccswap proxy --probe`.
+    - Run pass-through against a fake upstream.
+    - Run one real `claude -p "Return exactly ok"` through proxy only after fake upstream tests pass.
+    - Verify streaming output works.
+    - Verify no tokens appear in terminal output.
+    - Verify disabling proxy mode returns normal ccswap behavior.
 
 Proxy risks:
 
@@ -208,7 +344,7 @@ Use this as the handoff checklist. Items are intentionally small enough for a wo
 - Update `buildClaudeEnv()` so token injection is opt-in and test-covered.
 - In `oauth_env` mode, avoid `activateAccountCredential()` for normal launches.
 - Pass `CLAUDE_CODE_OAUTH_TOKEN` from the selected account credential into the Claude child env.
-- Keep deleting ambient `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` unless a future mode intentionally uses them.
+- Keep deleting ambient `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and Anthropic base-url env unless a future mode intentionally uses them.
 - Validate that usage capture still attributes snapshots to the selected ccswap account.
 - Validate account switching still rebuilds `--resume <session-id>` correctly.
 
@@ -220,6 +356,12 @@ Use this as the handoff checklist. Items are intentionally small enough for a wo
 - Decide whether `/login` credentials are usable for long sessions.
 - If not, document that `oauth_env` requires `claude setup-token` enrollment.
 - Do not implement refresh-token injection until a no-leak probe proves the exact env contract.
+
+Current finding:
+
+- The stored `/login` credential shape includes `claudeAiOauth.accessToken`, `expiresAt`, `refreshToken`, `scopes`, `rateLimitTier`, and `subscriptionType`.
+- A no-secret probe with fake `CLAUDE_CODE_OAUTH_REFRESH_TOKEN` and `CLAUDE_CODE_OAUTH_SCOPES` did not select a refresh-token auth method; `claude auth status --json` fell back to normal `claude.ai` auth.
+- `oauth_env` therefore remains access-token-only and experimental. Long-session refresh behavior is not proven; keep `keychain_copy` as default until the exact refresh env contract is verified or enrollment moves to `claude setup-token`.
 
 ### E. Proxy Probe
 
