@@ -140,6 +140,24 @@ Initial implementation:
 - It reports whether `HEAD /` and `POST /v1/messages?beta=true` were observed, redacts auth-like values, records whether `x-claude-code-session-id` was present, and records the request body's `stream` flag when JSON is available.
 - It does not implement upstream pass-through or account routing yet.
 
+Current implementation state:
+
+- Implemented: capture-only proxy probe.
+- Implemented: redacted request inspection for Claude's local proxy request shape.
+- Implemented: fake-child tests for request capture, missing POST failure, timeout, and redaction.
+- Not implemented: upstream pass-through to Anthropic.
+- Not implemented: SSE streaming pass-through.
+- Not implemented: replacing upstream auth with a selected ccswap account token.
+- Not implemented: `x-claude-code-session-id` to account routing.
+- Not implemented: usage-threshold-driven token swap without restarting Claude.
+- Not implemented: dashboard/daemon integration.
+- Not implemented: PATH shim so the user can type plain `claude`.
+
+If the probe succeeds, the next step is not "ship proxy mode". The next step is
+to implement pass-through against fake upstream servers, then real streaming
+pass-through, then account routing. Treat the probe as proof that Claude can be
+pointed at a local proxy, not proof that token swapping works.
+
 Proxy-only work breakdown:
 
 1. CLI surface
@@ -267,6 +285,73 @@ Proxy-only work breakdown:
     - Verify streaming output works.
     - Verify no tokens appear in terminal output.
     - Verify disabling proxy mode returns normal ccswap behavior.
+
+16. Completion path after capture-only probe succeeds
+    - Mark capture-only probe as complete only when it passes locally and in automated tests.
+    - Add a fake upstream server and forward Claude requests to that fake upstream.
+    - Verify the proxy preserves method, path, query, body, and required headers.
+    - Verify the proxy strips hop-by-hop headers.
+    - Verify the proxy can return a fake non-streaming Anthropic-shaped JSON response.
+    - Add fake SSE upstream support and test chunk-by-chunk forwarding.
+    - Verify Claude Code consumes the streamed response without falling back.
+    - Add a real upstream smoke test command guarded by an explicit flag so automated tests never call Anthropic.
+    - After real streaming pass-through works, add selected-account auth replacement.
+    - After selected-account auth replacement works, add session routing.
+    - After session routing works, add usage-threshold-based route switching for the next request.
+    - Only then consider wiring proxy mode into normal `ccswap claude`.
+
+17. Full app requirements for production proxy mode
+    - Dashboard starts or discovers a long-lived local proxy.
+    - Proxy lifecycle is owned by the dashboard/daemon, not by each short-lived probe.
+    - The proxy binds to `127.0.0.1` and exposes its port through daemon state.
+    - A `claude` shim or wrapper launches Claude with `ANTHROPIC_BASE_URL` pointing to that proxy.
+    - The shim resolves the real Claude binary without recursing into itself.
+    - The daemon tracks every active Claude session by `x-claude-code-session-id`.
+    - The daemon maps each session id to a selected account.
+    - The daemon exposes active sessions and their selected accounts in the dashboard.
+    - The daemon keeps per-account usage snapshots fresh.
+    - The daemon can mark a session as `swap_pending` when the selected account crosses the proactive threshold.
+    - The proxy does not switch auth in the middle of an active streaming response.
+    - The proxy switches auth on the next `/v1/messages` request after the current response finishes.
+    - If all backup accounts are exhausted, the proxy returns or passes through a clear error instead of silently looping.
+    - Keychain-copy mode remains available as a fallback.
+    - Normal `ccswap claude` wrapper mode remains available until daemon/shim mode is stable.
+    - The dashboard shows which mode is active:
+      - `keychain_copy`
+      - `oauth_env`
+      - `proxy`
+    - The dashboard shows whether proxy health is good, degraded, or unavailable.
+
+18. Token swap semantics in final proxy mode
+    - Initial request for a session uses the active account selected by ccswap.
+    - Every request is routed by session id, not by global active account alone.
+    - When usage reaches the proactive threshold, choose the next eligible account.
+    - Do not alter a request already in flight.
+    - Do not interrupt a tool call just to swap tokens.
+    - Swap by changing the session-to-account map before the next model request.
+    - The next model request gets `Authorization: Bearer <next account access token>`.
+    - Claude process stays alive.
+    - No prompt replay is needed.
+    - No `--resume` relaunch is needed for proactive proxy swaps.
+    - Hard limit errors may still require fallback relaunch or user-visible error handling.
+
+19. Failure handling required before production
+    - If upstream returns 401/403 for the selected account, mark that account unhealthy for the session.
+    - If upstream returns 429 or usage exhausted, try the next eligible account only at a request boundary.
+    - If proxy crashes, the wrapper or daemon should report that proxy mode is unavailable and suggest fallback mode.
+    - If Claude sends an unknown endpoint, either pass it through conservatively or fail with a clear unsupported endpoint message.
+    - If no session id header is present, fail closed in production account-routing mode.
+    - If token parsing fails, never print the credential payload.
+    - If a request body cannot be parsed, still pass through raw bytes when in pass-through mode.
+
+20. User-facing documentation required before production
+    - README section explaining proxy mode is experimental until proven.
+    - README section explaining that proxy mode can swap accounts between model requests without restarting Claude.
+    - README warning that it cannot swap a token in the middle of an active streaming response.
+    - README explanation of fallback modes.
+    - CLI help for `ccswap proxy --probe`.
+    - CLI help for any future proxy enablement command.
+    - Dashboard labels for proxy health and per-session selected account.
 
 Proxy risks:
 
