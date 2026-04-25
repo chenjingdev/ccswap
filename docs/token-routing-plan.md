@@ -73,6 +73,12 @@ Recommended first experiment:
 
 5. If that works, add an experimental launch path where ccswap injects `CLAUDE_CODE_OAUTH_TOKEN` for the child process instead of mutating the standard Claude Code credential.
 
+Initial implementation:
+
+- `ccswap token-probe <account>` reads the saved ccswap account credential, parses `claudeAiOauth.accessToken`, and runs `claude auth status --json` with `CLAUDE_CODE_OAUTH_TOKEN` set only for that child process.
+- `ccswap token-probe <account> --infer` additionally runs `claude -p "Return exactly ok"` after auth status succeeds.
+- Normal `ccswap run` / `ccswap claude` launches still use Keychain-copy activation until refresh behavior is proven.
+
 Open risk:
 
 - The access token stored by `/login` may be short-lived. It is not yet proven that injecting only `claudeAiOauth.accessToken` can refresh. Binary strings mention `CLAUDE_CODE_OAUTH_REFRESH_TOKEN` and `CLAUDE_CODE_OAUTH_SCOPES`, so refresh-token injection may exist, but it needs a careful no-leak test.
@@ -155,6 +161,150 @@ This fallback is less elegant but stable because it follows Claude Code's normal
 4. Keep default mode as Keychain copy until refresh behavior is proven.
 5. Add `ccswap proxy --probe` after env injection is evaluated.
 6. Only wire proxy into daemon/session management after the probe succeeds with streaming.
+
+## Work Checklist
+
+Use this as the handoff checklist. Items are intentionally small enough for a worker agent to take one slice at a time.
+
+### A. Completed Cleanup Baseline
+
+- Confirm `claude_config_dir` is not part of `AccountData`.
+- Confirm `addAccount()` no longer creates `~/.config/ccswap/accounts/<name>/claude`.
+- Confirm `ccswap init` no longer creates `~/.config/ccswap/accounts`.
+- Confirm legacy configs with `claude_config_dir` still load.
+- Confirm legacy `claude_config_dir` is dropped on save.
+- Confirm README says per-account Claude config folders are gone.
+
+### B. Token Injection Probe
+
+- Add a small command such as `ccswap token-probe <account>`.
+- Reuse existing account lookup and credential parsing.
+- Never print token values.
+- Inject `CLAUDE_CODE_OAUTH_TOKEN` only into the spawned child process.
+- Run `claude auth status --json` and report only non-secret fields:
+  - `loggedIn`
+  - `authMethod`
+  - `apiProvider`
+  - account/email if Claude returns it
+- Add `--infer` to run one tiny `claude -p "Return exactly ok"` inference.
+- Use a scratch trusted cwd for the inference probe.
+- Add tests for argument parsing and redacted output.
+- Keep normal `ccswap claude` behavior unchanged until the probe proves inference works.
+
+### C. Token Injection Launch Mode
+
+- Add an explicit config field only after the probe works, for example:
+
+  ```json
+  {
+    "auth_mode": "keychain_copy"
+  }
+  ```
+
+- Supported values should start minimal:
+  - `keychain_copy`
+  - `oauth_env`
+- Default must remain `keychain_copy`.
+- Update `buildClaudeEnv()` so token injection is opt-in and test-covered.
+- In `oauth_env` mode, avoid `activateAccountCredential()` for normal launches.
+- Pass `CLAUDE_CODE_OAUTH_TOKEN` from the selected account credential into the Claude child env.
+- Keep deleting ambient `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` unless a future mode intentionally uses them.
+- Validate that usage capture still attributes snapshots to the selected ccswap account.
+- Validate account switching still rebuilds `--resume <session-id>` correctly.
+
+### D. Token Refresh Investigation
+
+- Inspect the stored credential shape without logging secrets.
+- Check whether stored credentials include refresh token and scopes fields.
+- Probe whether `CLAUDE_CODE_OAUTH_REFRESH_TOKEN` plus `CLAUDE_CODE_OAUTH_SCOPES` is accepted.
+- Decide whether `/login` credentials are usable for long sessions.
+- If not, document that `oauth_env` requires `claude setup-token` enrollment.
+- Do not implement refresh-token injection until a no-leak probe proves the exact env contract.
+
+### E. Proxy Probe
+
+- Add a separate command such as `ccswap proxy --probe`.
+- Bind only to `127.0.0.1` on an ephemeral port.
+- Redact all auth-like headers and token-looking strings in logs.
+- Start with capture-only behavior:
+  - respond `200` to `HEAD /`
+  - capture `POST /v1/messages?beta=true`
+  - report whether `x-claude-code-session-id` is present
+  - report whether request body has `stream: true`
+- Then add optional pass-through behind a flag, for example `--upstream`.
+- Pass through to `https://api.anthropic.com`.
+- Preserve Anthropic headers and query strings.
+- Support SSE streaming without buffering the whole response.
+- Support non-streaming JSON fallback.
+- Add tests with a fake upstream server.
+
+### F. Proxy Account Routing
+
+- Only start after proxy pass-through works.
+- Load the selected ccswap account credential in memory.
+- Replace upstream `Authorization` with the selected account access token.
+- Do not mutate Claude Code's standard Keychain credential.
+- Track routing by `x-claude-code-session-id` when possible.
+- Add a session-to-account map in runtime state or daemon state.
+- Do not log raw headers after auth replacement.
+- Confirm `/api/oauth/usage` polling still uses the intended account token.
+
+### G. Daemon And Shim Direction
+
+- Keep this separate from token/proxy probes.
+- Target UX:
+  - dashboard/daemon is always running
+  - user types `claude`
+  - PATH shim forwards to ccswap
+  - ccswap launches or attaches a managed Claude PTY
+- The shim must find the real Claude binary without recursing into itself.
+- The daemon should centralize:
+  - active sessions
+  - selected account per session
+  - usage snapshots
+  - token/proxy mode
+  - relaunch/resume decisions
+- Multiple simultaneous sessions need account locking or routing rules.
+- The current wrapper path should remain available during daemon development.
+
+### H. Safe Swap Timing
+
+- Avoid killing Claude while a tool is actively running.
+- Introduce runtime fields only if needed:
+  - `swap_pending`
+  - `tool_in_flight`
+  - `last_tool_finished_at`
+- Prefer Claude Code hook events or transcript JSONL evidence for tool boundaries.
+- Swap at a quiet boundary:
+  - after tool result
+  - before the next LLM request
+  - or after a turn stops
+- For proactive threshold swaps, resume without replaying the last prompt.
+- For hard limit swaps, keep the existing replay behavior unless token/proxy mode makes it unnecessary.
+
+### I. Verification Required Before Shipping
+
+- `pnpm typecheck`
+- `pnpm test`
+- `pnpm build`
+- Manual `claude auth status --json` probe with fake token should not be treated as proof of usable inference.
+- Manual real-token inference must be performed before enabling `oauth_env`.
+- Proxy pass-through must be tested with streaming output before it is wired into normal runs.
+- Confirm no token values appear in stdout, stderr, test snapshots, debug logs, or thrown errors.
+
+### J. Files Most Likely To Change
+
+- `src/core/env.ts`
+- `src/core/credentials.ts`
+- `src/core/config.ts`
+- `src/claude/session.ts`
+- `src/claude/runner.ts`
+- `src/cli.ts`
+- `src/commands/*`
+- `tests/core.test.ts`
+- `tests/runner.integration.test.ts`
+- new proxy tests if proxy work starts
+- README after a mode becomes user-facing
 
 ## Do Not Reintroduce
 
