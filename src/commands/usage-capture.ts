@@ -3,9 +3,11 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 import { findAccount, loadConfig } from "../core/config.js";
+import { getAccountCredential, parseStoredCredential } from "../core/credentials.js";
 import {
   accountUsageCachePath,
   captureStatusLineUsage,
+  usageCredentialFingerprint,
   type StatusLineRateLimitsInput,
 } from "../core/usage.js";
 
@@ -41,17 +43,22 @@ export function runUsageCapture(options: UsageCaptureOptions): number {
 
   try {
     const config = loadConfig();
-    const account = findAccount(config, options.account);
+    const accountName = options.account;
+    const account = findAccount(config, accountName);
     if (process.env["CCSWAP_USAGE_CAPTURE_DEBUG"]) {
-      process.stderr.write(`[ccswap] usage-capture account=${options.account} found=${account ? "yes" : "no"}\n`);
+      process.stderr.write(`[ccswap] usage-capture account=${accountName} found=${account ? "yes" : "no"}\n`);
     }
     if (account) {
+      const credential = getAccountCredential(account);
+      const parsedCredential = parseStoredCredential(credential?.secret ?? null);
       const parsedInput = JSON.parse(rawInput) as unknown;
       if (parsedInput && typeof parsedInput === "object" && !Array.isArray(parsedInput)) {
         const ok = captureStatusLineUsage(
           accountUsageCachePath(account),
           null,
           parsedInput as StatusLineRateLimitsInput,
+          Date.now(),
+          usageCredentialFingerprint(parsedCredential.access_token),
         );
         if (process.env["CCSWAP_USAGE_CAPTURE_DEBUG"]) {
           process.stderr.write(`[ccswap] usage-capture wrote=${ok ? "yes" : "no"}\n`);

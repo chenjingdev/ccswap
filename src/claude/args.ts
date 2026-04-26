@@ -1,4 +1,4 @@
-import { isReplayMode, OPTIONS_WITH_VALUE } from "../core/constants.js";
+import { DEFAULT_CONTINUE_PROMPT, isReplayMode, OPTIONS_WITH_VALUE } from "../core/constants.js";
 import type { SessionRuntimeState } from "../core/runtime.js";
 
 export interface SplitResult {
@@ -47,6 +47,7 @@ export function buildResumeArgs(
   originalArgs: string[],
   runtime: SessionRuntimeState,
   disableAutoContinue = false,
+  includeReplayPrompt = true,
 ): string[] {
   if (disableAutoContinue) return originalArgs;
   if (originalArgs.some((arg) => arg === "-p" || arg === "--print")) return originalArgs;
@@ -100,10 +101,14 @@ export function buildResumeArgs(
   const resumeArgs = ["--resume", sessionId, ...resumeFiltered];
 
   let promptToSend: string | null = null;
-  if (replayMode === "last_prompt") {
-    promptToSend = runtime.last_prompt ?? originalPrompt;
-  } else if (replayMode === "custom_prompt") {
-    promptToSend = runtime.custom_prompt;
+  if (includeReplayPrompt) {
+    if (replayMode === "last_prompt") {
+      promptToSend = runtime.last_prompt ?? originalPrompt;
+    } else if (replayMode === "continue") {
+      promptToSend = DEFAULT_CONTINUE_PROMPT;
+    } else if (replayMode === "custom_prompt") {
+      promptToSend = runtime.custom_prompt;
+    }
   }
   if (promptToSend) resumeArgs.push(promptToSend);
   return resumeArgs;

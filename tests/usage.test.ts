@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,6 +10,7 @@ import {
   parseUsageCache,
   readUsageCacheState,
   refreshUsageCache,
+  usageCredentialFingerprint,
   usagePlanName,
   usingCustomApiEndpoint,
 } from "../src/core/usage.js";
@@ -93,6 +94,29 @@ describe("parseUsageCache", () => {
 
   it("returns empty snapshot for missing file", () => {
     const snap = loadUsageCache(join(tmp, "missing.json"));
+    expect(snap.plan_name).toBeNull();
+    expect(snap.five_hour_pct).toBeNull();
+  });
+
+  it("ignores cache data written for a different access token", () => {
+    const path = join(tmp, "c.json");
+    writeCache(path, {
+      data: { planName: "Max", fiveHour: 20, sevenDay: 15 },
+      timestamp: 1710000000000,
+      credentialFingerprint: usageCredentialFingerprint("token-a"),
+    });
+    const snap = loadUsageCache(path, { accessToken: "token-b", subscriptionType: "max" });
+    expect(snap.plan_name).toBeNull();
+    expect(snap.five_hour_pct).toBeNull();
+  });
+
+  it("ignores legacy cache data whose plan does not match the credential", () => {
+    const path = join(tmp, "c.json");
+    writeCache(path, {
+      data: { planName: "Max", fiveHour: 20, sevenDay: 15 },
+      timestamp: 1710000000000,
+    });
+    const snap = loadUsageCache(path, { accessToken: "team-token", subscriptionType: "team" });
     expect(snap.plan_name).toBeNull();
     expect(snap.five_hour_pct).toBeNull();
   });
@@ -181,6 +205,7 @@ describe("parseUsageCache", () => {
         },
       },
       1710000000000,
+      usageCredentialFingerprint("token-123"),
     );
     expect(ok).toBe(true);
     const snap = parseUsageCache(path);
@@ -191,6 +216,7 @@ describe("parseUsageCache", () => {
     expect(snap.five_hour_reset_at).toBe("3000-01-01T00:00:00.000Z");
     const state = readUsageCacheState(path, 1710000000000 + 60_000);
     expect(state?.fresh).toBe(true);
+    expect(readUsageCacheState(path, 1710000000000 + 60_000, { accessToken: "other-token" })).toBeNull();
   });
 
   it("ignores statusline input without rate limits", () => {
@@ -231,6 +257,10 @@ describe("refreshUsageCache (mocked fetch)", () => {
 
     const ok = await refreshUsageCache(cache, lock, "token-123", "max", { force: true, env: {} });
     expect(ok).toBe(true);
+    const raw = JSON.parse(readFileSync(cache, "utf-8")) as {
+      credentialFingerprint?: string;
+    };
+    expect(raw.credentialFingerprint).toBe(usageCredentialFingerprint("token-123"));
     const snap = loadUsageCache(cache);
     expect(snap.plan_name).toBe("Max");
     expect(snap.five_hour_pct).toBe(87);

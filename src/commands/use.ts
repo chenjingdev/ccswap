@@ -1,6 +1,7 @@
 import { findAccount, loadConfig } from "../core/config.js";
-import { activateAccountCredential } from "../core/credentials.js";
+import { buildClaudeLaunchAuth } from "../core/env.js";
 import { loadState, saveState } from "../core/state.js";
+import { accountNeedsRelogin } from "../core/accounts.js";
 
 export function runUse(name: string): number {
   const config = loadConfig();
@@ -10,9 +11,13 @@ export function runUse(name: string): number {
     console.error(`account "${name}" not found`);
     return 1;
   }
-  const activated = activateAccountCredential(account);
-  if (!activated) {
-    console.error(`account "${name}" has no saved login. run: ccswap login ${name}`);
+  if (accountNeedsRelogin(account)) {
+    console.error(`[ccswap] Account '${account.name}' needs re-login. Run: ccswap login ${account.name}`);
+    return 1;
+  }
+  const auth = buildClaudeLaunchAuth(account, config.auth_mode);
+  if (auth.error) {
+    console.error(auth.error.trimEnd());
     return 1;
   }
   state.last_account = state.active_account;

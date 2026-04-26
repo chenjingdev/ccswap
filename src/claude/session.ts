@@ -1,20 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 
-import type { AccountData, AppConfigData } from "../core/config.js";
+import { loadConfig, type AccountData, type AppConfigData } from "../core/config.js";
+import { accountNeedsRelogin, markAccountAuthError } from "../core/accounts.js";
 import type { AppStateData } from "../core/state.js";
 import { ensureDir } from "../core/fs-util.js";
-import { RUNTIME_DIR } from "../core/paths.js";
-import { saveState } from "../core/state.js";
+import { CONFIG_PATH, RUNTIME_DIR } from "../core/paths.js";
 import {
   withUsageCaptureSettingsArgs,
   writeUsageCaptureSettings,
 } from "../core/statusline.js";
-import {
-  activateAccountCredential,
-  getAccountCredential,
-} from "../core/credentials.js";
-import { buildClaudeEnv } from "../core/env.js";
+import { getAccountCredential } from "../core/credentials.js";
+import { buildClaudeLaunchAuth } from "../core/env.js";
 import { isAccountUsageAtOrAbove, isAccountUsageExhausted } from "../core/usage.js";
 import {
   cleanupStaleRuntimeSessions,
@@ -25,7 +22,7 @@ import {
   type SessionRuntimeState,
 } from "../core/runtime.js";
 import { buildResumeArgs, resolveSessionDirective, splitPromptFromArgs } from "./args.js";
-import { runClaude } from "./runner.js";
+import { runClaude, type RunnerResult } from "./runner.js";
 import { startSessionWatcher, type SessionWatcherHandle } from "./session-watcher.js";
 
 function pickLaunchAccount(accounts: AccountData[], state: AppStateData): string | null {
@@ -40,10 +37,9 @@ function pickLaunchAccount(accounts: AccountData[], state: AppStateData): string
 
 function pickNextAccount(
   accounts: AccountData[],
-  state: AppStateData,
+  pivot: string | null,
   exclude: Set<string>,
 ): string | null {
-  const pivot = state.active_account ?? state.last_account;
   let ordered = accounts;
   if (pivot) {
     const idx = accounts.findIndex((a) => a.name === pivot);
@@ -60,13 +56,13 @@ function pickNextAccount(
 
 async function pickNextReadyAccount(
   accounts: AccountData[],
-  state: AppStateData,
+  pivot: string | null,
   exclude: Set<string>,
   proactiveThresholdPct: number | null,
 ): Promise<string | null> {
   const skipped = new Set(exclude);
   while (true) {
-    const next = pickNextAccount(accounts, state, skipped);
+    const next = pickNextAccount(accounts, pivot, skipped);
     if (!next) return null;
     if (proactiveThresholdPct === null) return next;
     const account = accounts.find((a) => a.name === next);
@@ -76,6 +72,87 @@ async function pickNextReadyAccount(
     }
     skipped.add(next);
   }
+}
+
+function getRequestedAccount(
+  runtime: SessionRuntimeState,
+  accounts: AccountData[],
+  currentName: string,
+): string | null {
+  if (!runtime.requested_account || runtime.requested_account === currentName) return null;
+  const requested = accounts.find((account) => account.name === runtime.requested_account);
+  return requested ? requested.name : null;
+}
+
+function configuredAccounts(fallback: AccountData[]): AccountData[] {
+  try {
+    return existsSync(CONFIG_PATH) ? loadConfig().accounts : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function eligibleAccounts(fallback: AccountData[]): AccountData[] {
+  return configuredAccounts(fallback).filter((a) => getAccountCredential(a) !== null && !accountNeedsRelogin(a));
+}
+
+function reloginBlockedAccounts(fallback: AccountData[]): AccountData[] {
+  return configuredAccounts(fallback).filter((a) => getAccountCredential(a) !== null && accountNeedsRelogin(a));
+}
+
+function writeNoEligibleAccountsMessage(fallback: AccountData[]): void {
+  const blocked = reloginBlockedAccounts(fallback);
+  if (blocked.length > 0) {
+    const first = blocked[0]!;
+    process.stderr.write(
+      `[ccswap] Saved Claude login for '${first.name}' needs re-login. Run: ccswap login ${first.name}\n`,
+    );
+    if (blocked.length > 1) {
+      process.stderr.write(`[ccswap] ${blocked.length - 1} more saved login(s) also need re-login.\n`);
+    }
+    return;
+  }
+  process.stderr.write("[ccswap] No accounts with saved logins configured.\n");
+}
+
+interface PreparedLaunchArgs {
+  args: string[];
+  expectedSessionId: string | null;
+  runtimeSessionId: string | null;
+}
+
+function prepareLaunchArgs(args: string[]): PreparedLaunchArgs {
+  const directive = resolveSessionDirective(args);
+  if (directive.kind === "user-provided") {
+    return {
+      args: [...args],
+      expectedSessionId: directive.sessionId,
+      runtimeSessionId: directive.sessionId,
+    };
+  }
+  if (directive.kind === "none") {
+    const launchPrompt = splitPromptFromArgs(args).prompt;
+    const shouldExposeGeneratedSession =
+      Boolean(launchPrompt) && !launchPrompt?.trimStart().startsWith("/");
+    if (!shouldExposeGeneratedSession) {
+      return {
+        args: [...args],
+        expectedSessionId: null,
+        runtimeSessionId: null,
+      };
+    }
+    const sessionId = randomUUID();
+    return {
+      args: [...args, "--session-id", sessionId],
+      expectedSessionId: sessionId,
+      runtimeSessionId: sessionId,
+    };
+  }
+  return {
+    args: [...args],
+    expectedSessionId: null,
+    runtimeSessionId: null,
+  };
 }
 
 export interface SessionOptions {
@@ -89,13 +166,13 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
   const { config, state } = opts;
   cleanupStaleRuntimeSessions();
 
-  const eligible = config.accounts.filter((a) => getAccountCredential(a) !== null);
+  let eligible = eligibleAccounts(config.accounts);
   if (eligible.length === 0) {
-    process.stderr.write("[ccswap] No accounts with saved logins configured.\n");
+    writeNoEligibleAccountsMessage(config.accounts);
     return 1;
   }
 
-  let currentName = state.active_account ?? pickLaunchAccount(eligible, state);
+  let currentName = pickLaunchAccount(eligible, state);
   if (!currentName) {
     process.stderr.write("[ccswap] No eligible account is available.\n");
     return 1;
@@ -117,29 +194,30 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
     replay_mode: config.replay_mode,
     custom_prompt: config.custom_prompt || null,
     started_at: new Date().toISOString(),
+    ccswap_pid: process.pid,
     claude_pid: null,
+    swap_pending: false,
+    swap_reason: null,
+    swap_requested_at: null,
+    requested_account: null,
+    requested_reason: null,
+    requested_at: null,
+    last_activity_at: null,
+    safe_to_restart: false,
+    auth_error_account: null,
+    auth_error_reason: null,
+    auth_error_at: null,
   };
   saveRuntimeState(statePath, runtime);
 
-  // Pre-resolve the session id so the watcher can pin the run to a specific
-  // Claude transcript instead of guessing from cwd+mtime. If the user did not
-  // already pass --session-id / --resume / -c, ccswap generates a fresh UUID
-  // and injects --session-id so Claude persists to a filename we chose.
-  const initialDirective = resolveSessionDirective(opts.originalArgs);
-  let launchArgs = [...opts.originalArgs];
-  let expectedSessionId: string | null = null;
-  if (initialDirective.kind === "user-provided") {
-    expectedSessionId = initialDirective.sessionId;
-  } else if (initialDirective.kind === "none") {
-    expectedSessionId = randomUUID();
-    launchArgs.push("--session-id", expectedSessionId);
-  }
-  // For "user-continue" we leave expectedSessionId null and rely on the
-  // watcher's mtime-snapshot fallback — Claude picks which file to resume.
-
-  if (expectedSessionId) {
-    updateRuntimeState(statePath, runId, { session_id: expectedSessionId });
-  }
+  // Generated --session-id values are only anchors for the watcher. They are
+  // not safe to replay until Claude actually creates the transcript file.
+  // User-provided --resume/--session-id values are already real user intent, so
+  // those can be exposed immediately in runtime state.
+  let preparedLaunch = prepareLaunchArgs(opts.originalArgs);
+  let launchArgs = preparedLaunch.args;
+  let expectedSessionId = preparedLaunch.expectedSessionId;
+  let runtimeSessionId = preparedLaunch.runtimeSessionId;
 
   let watcher: SessionWatcherHandle | null = null;
   const stopWatcher = (): void => {
@@ -153,6 +231,7 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
 
   try {
     while (true) {
+      eligible = eligibleAccounts(config.accounts);
       const account = eligible.find((a) => a.name === currentName);
       if (!account) {
         process.stderr.write(`[ccswap] Missing account '${currentName}'.\n`);
@@ -162,25 +241,18 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
       const { prompt: launchPrompt } = splitPromptFromArgs(launchArgs);
       const detectorArmed = Boolean(launchPrompt && !launchPrompt.trimStart().startsWith("/"));
 
-      state.active_account = account.name;
-      state.last_account = account.name;
-      saveState(state);
-
       updateRuntimeState(statePath, runId, {
         cwd: opts.launchCwd,
         active_account: account.name,
-        replay_mode: config.replay_mode,
-        custom_prompt: config.custom_prompt || null,
+        session_id: runtimeSessionId,
+        ccswap_pid: process.pid,
         detector_armed: detectorArmed,
+        swap_pending: false,
+        swap_reason: null,
+        swap_requested_at: null,
+        last_activity_at: null,
+        safe_to_restart: false,
       });
-
-      const activated = activateAccountCredential(account);
-      if (!activated) {
-        process.stderr.write(
-          `[ccswap] Account '${account.name}' has no saved Claude login. Run: ccswap login ${account.name}\n`,
-        );
-        return 1;
-      }
 
       process.stderr.write(
         `[ccswap] Launching Claude with '${account.name}' in ${opts.launchCwd}\n`,
@@ -198,11 +270,19 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
       writeUsageCaptureSettings(account, settingsPath, launchArgs);
       const runArgs = withUsageCaptureSettingsArgs(launchArgs, settingsPath);
 
-      const result = await runClaude({
+      const auth = buildClaudeLaunchAuth(account, config.auth_mode);
+      if (auth.error) {
+        process.stderr.write(auth.error);
+        return 1;
+      }
+      const env = auth.env;
+
+      let result: RunnerResult;
+      result = await runClaude({
         claudeBin: config.claude_bin,
         args: runArgs,
         cwd: opts.launchCwd,
-        env: buildClaudeEnv(),
+        env,
         accountName: account.name,
         onStarted: (pid) => {
           updateRuntimeState(statePath, runId, {
@@ -212,54 +292,124 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
         },
         shouldArmLimit: () => loadRuntimeState(statePath, runId).detector_armed,
         shouldConfirmLimit: () => isAccountUsageExhausted(account, true),
+        shouldApplyRequestedAccount: () => {
+          const latest = loadRuntimeState(statePath, runId);
+          if (!latest.requested_account) return false;
+          return getRequestedAccount(latest, eligibleAccounts(config.accounts), account.name) !== null;
+        },
         shouldProactivelySwap: config.proactive_swap_threshold_pct === null
           ? undefined
           : () => isAccountUsageAtOrAbove(account, config.proactive_swap_threshold_pct ?? 95, false),
+        onProactiveSwapPending: () => {
+          const now = new Date().toISOString();
+          updateRuntimeState(statePath, runId, {
+            swap_pending: true,
+            swap_reason: "proactive_usage",
+            swap_requested_at: now,
+            last_activity_at: now,
+            safe_to_restart: false,
+          });
+        },
+        onProactiveSwapBoundary: () => {
+          updateRuntimeState(statePath, runId, {
+            safe_to_restart: true,
+            last_activity_at: new Date().toISOString(),
+          });
+        },
+        onRequestedAccountPending: () => {
+          updateRuntimeState(statePath, runId, {
+            last_activity_at: new Date().toISOString(),
+            safe_to_restart: false,
+          });
+        },
+        onRequestedAccountBoundary: () => {
+          updateRuntimeState(statePath, runId, {
+            safe_to_restart: true,
+            last_activity_at: new Date().toISOString(),
+          });
+        },
+        onAuthFailure: (failure) => {
+          updateRuntimeState(statePath, runId, {
+            auth_error_account: account.name,
+            auth_error_reason: failure.reason,
+            auth_error_at: new Date().toISOString(),
+            safe_to_restart: false,
+          });
+        },
       });
 
       stopWatcher();
 
-      if (!result.limitHit && !result.proactiveSwap) {
+      if (result.authFailure) {
+        const reason = result.authFailure.reason;
+        markAccountAuthError(account.name, reason);
+        process.stderr.write(
+          `[ccswap] Claude login for '${account.name}' looks expired or invalid (${reason}). Run: ccswap login ${account.name}\n`,
+        );
+        return result.exitCode || 1;
+      }
+
+      if (!result.limitHit && !result.proactiveSwap && !result.requestedAccountSwap) {
         return result.exitCode;
       }
 
-      attempted.add(account.name);
+      const endedAccountName = account.name;
+      let nextName: string | null = null;
+      const latest = loadRuntimeState(statePath, runId);
+      eligible = eligibleAccounts(config.accounts);
 
-      const nextName = await pickNextReadyAccount(
-        eligible,
-        state,
-        attempted,
-        config.proactive_swap_threshold_pct,
-      );
+      if (result.requestedAccountSwap) {
+        nextName = getRequestedAccount(latest, eligible, endedAccountName);
+        if (!nextName) {
+          updateRuntimeState(statePath, runId, {
+            requested_account: null,
+            requested_reason: null,
+            requested_at: null,
+            safe_to_restart: false,
+          });
+          return result.exitCode;
+        }
+      } else {
+        attempted.add(endedAccountName);
+        nextName = await pickNextReadyAccount(
+          eligible,
+          endedAccountName,
+          attempted,
+          config.proactive_swap_threshold_pct,
+        );
+      }
+
       if (!nextName) {
         const reason = result.proactiveSwap ? "reached the proactive swap threshold" : "hit its limit";
-        process.stderr.write(`[ccswap] '${account.name}' ${reason} and no backup account is ready.\n`);
+        process.stderr.write(`[ccswap] '${endedAccountName}' ${reason} and no backup account is ready.\n`);
         return 1;
       }
 
-      const latest = loadRuntimeState(statePath, runId);
+      const includeReplayPrompt =
+        result.limitHit ||
+        (result.proactiveSwap && result.proactiveSwapNeedsPrompt) ||
+        (result.requestedAccountSwap && result.requestedAccountSwapNeedsPrompt);
       launchArgs = buildResumeArgs(
         opts.originalArgs,
         result.proactiveSwap
           ? { ...latest, replay_mode: "continue", last_prompt: null, custom_prompt: null }
           : latest,
         false,
+        includeReplayPrompt,
       );
-      // Re-derive the expected session id from the rebuilt args. buildResumeArgs
-      // prepends `--resume <sessionId>`, which resolveSessionDirective reports
-      // as user-provided — so the watcher on the next iteration stays pinned
-      // to the exact same transcript we were tracking before the swap.
-      const nextDirective = resolveSessionDirective(launchArgs);
-      if (nextDirective.kind === "user-provided") {
-        expectedSessionId = nextDirective.sessionId;
-      }
-      // If the swap could not resolve a session id (e.g. watcher had not yet
-      // discovered one for a --continue run), leave the previous value in
-      // place; a null expectedSessionId will re-enter the mtime-snapshot path.
+      preparedLaunch = prepareLaunchArgs(launchArgs);
+      launchArgs = preparedLaunch.args;
+      expectedSessionId = preparedLaunch.expectedSessionId;
+      runtimeSessionId = preparedLaunch.runtimeSessionId;
 
-      process.stderr.write(`[ccswap] Switching to '${nextName}'\n`);
-      state.active_account = nextName;
-      saveState(state);
+      updateRuntimeState(statePath, runId, {
+        session_id: runtimeSessionId,
+        requested_account: null,
+        requested_reason: null,
+        requested_at: null,
+        safe_to_restart: false,
+      });
+      process.stderr.write(`[ccswap] Switching this session to '${nextName}'\n`);
       currentName = nextName;
     }
   } finally {

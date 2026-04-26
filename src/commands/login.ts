@@ -1,4 +1,9 @@
-import { addAccount, deriveUniqueAccountName } from "../core/accounts.js";
+import {
+  addAccount,
+  clearAccountAuthError,
+  deriveUniqueAccountName,
+  findAccountByEmail,
+} from "../core/accounts.js";
 import { findAccount, loadConfig, saveConfig } from "../core/config.js";
 import {
   getStandardClaudeAccountInfo,
@@ -7,7 +12,16 @@ import {
   storeAccountCredential,
 } from "../core/credentials.js";
 import { buildClaudeEnv } from "../core/env.js";
+import { loadState, saveState } from "../core/state.js";
 import { runInteractive } from "../claude/pty-interactive.js";
+
+function setInitialActiveAccount(accountName: string): void {
+  const state = loadState();
+  if (state.active_account || state.last_account) return;
+  state.active_account = accountName;
+  state.last_account = accountName;
+  saveState(state);
+}
 
 export async function runLogin(name: string): Promise<number> {
   const config = loadConfig();
@@ -37,8 +51,13 @@ export async function runLogin(name: string): Promise<number> {
     return 1;
   }
   const info = getStandardClaudeAccountInfo();
-  if (info?.emailAddress) account.email = info.emailAddress;
+  if (info) {
+    account.claude_account = info;
+    if (info.emailAddress) account.email = info.emailAddress;
+  }
+  clearAccountAuthError(account);
   saveConfig(config);
+  setInitialActiveAccount(account.name);
   console.log(`saved login for "${account.name}"`);
   return 0;
 }
@@ -68,15 +87,21 @@ export async function runLoginNewAccount(): Promise<{ exitCode: number; accountN
 
   const info = getStandardClaudeAccountInfo();
   const hint = info?.emailAddress || info?.displayName || null;
-  const name = deriveUniqueAccountName(config, hint);
+  const existing = findAccountByEmail(config, info?.emailAddress ?? null);
+  const name = existing?.name ?? deriveUniqueAccountName(config, hint);
 
-  const account = addAccount(config, name);
+  const account = existing ?? addAccount(config, name);
   if (!storeAccountCredential(account, credential)) {
     console.error("login succeeded but failed to save credential");
     return { exitCode: 1, accountName: null };
   }
-  if (info?.emailAddress) account.email = info.emailAddress;
+  if (info) {
+    account.claude_account = info;
+    if (info.emailAddress) account.email = info.emailAddress;
+  }
+  clearAccountAuthError(account);
   saveConfig(config);
+  setInitialActiveAccount(account.name);
   console.log(`saved login as "${name}"`);
   return { exitCode: 0, accountName: name };
 }

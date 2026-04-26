@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { DEFAULT_CONTINUE_PROMPT } from "../src/core/constants.js";
+import { detectClaudeAuthFailure } from "../src/claude/auth-failure.js";
 import { LimitDetector } from "../src/claude/limit-detector.js";
 import {
   buildResumeArgs,
@@ -64,6 +66,17 @@ describe("LimitDetector", () => {
   });
 });
 
+describe("detectClaudeAuthFailure", () => {
+  it("detects real auth failure output", () => {
+    expect(detectClaudeAuthFailure("Error: 401 Unauthorized")?.kind).toBe("unauthorized");
+    expect(detectClaudeAuthFailure("OAuth token has expired")?.kind).toBe("oauth_expired");
+  });
+
+  it("does not treat ordinary HTTP discussion as a login failure", () => {
+    expect(detectClaudeAuthFailure("HTTP 401 Unauthorized usually means auth failed in a web API.")).toBeNull();
+  });
+});
+
 describe("splitPromptFromArgs", () => {
   it("splits trailing positional prompt", () => {
     expect(splitPromptFromArgs(["--model", "sonnet", "hello"])).toEqual({
@@ -106,7 +119,13 @@ describe("buildResumeArgs", () => {
     replay_mode: "last_prompt",
     custom_prompt: null,
     started_at: null,
+    ccswap_pid: null,
     claude_pid: null,
+    swap_pending: false,
+    swap_reason: null,
+    swap_requested_at: null,
+    last_activity_at: null,
+    safe_to_restart: false,
   };
 
   it("returns original args without session_id", () => {
@@ -193,6 +212,28 @@ describe("buildResumeArgs", () => {
     };
     const result = buildResumeArgs([], state);
     expect(result).toEqual(["--resume", "abc-123", "custom go"]);
+  });
+
+  it("uses --resume with a continuation prompt for proactive relaunches", () => {
+    const state: SessionRuntimeState = {
+      ...base,
+      replay_mode: "continue",
+      last_prompt: null,
+      custom_prompt: null,
+    };
+    const result = buildResumeArgs(["--model", "sonnet", "old prompt"], state, false);
+    expect(result).toEqual(["--resume", "abc-123", "--model", "sonnet", DEFAULT_CONTINUE_PROMPT]);
+  });
+
+  it("uses --resume without replay prompt for stable relaunches", () => {
+    const state: SessionRuntimeState = {
+      ...base,
+      replay_mode: "continue",
+      last_prompt: null,
+      custom_prompt: null,
+    };
+    const result = buildResumeArgs(["--model", "sonnet", "old prompt"], state, false, false);
+    expect(result).toEqual(["--resume", "abc-123", "--model", "sonnet"]);
   });
 
   it("skips resume injection in --print mode", () => {
@@ -422,6 +463,7 @@ describe("startSessionWatcher", () => {
           replay_mode: "last_prompt",
           custom_prompt: null,
           started_at: new Date().toISOString(),
+          ccswap_pid: null,
           claude_pid: null,
         },
         null,
@@ -539,6 +581,49 @@ describe("startSessionWatcher", () => {
     rmSync(home, { recursive: true, force: true });
     rmSync(runtimeDir, { recursive: true, force: true });
   });
+
+  it("does not publish an unanchored session id until the transcript has a real prompt", async () => {
+    const { home, projectDir, runtimeDir } = setupFakeHome();
+    const statePath = join(runtimeDir, "state.json");
+    writeState(statePath, null);
+
+    const active = "eeeeeee3-eeee-eeee-eeee-eeeeeeeeeeee";
+    const activePath = join(projectDir, `${active}.jsonl`);
+
+    const handle = startSessionWatcher({
+      runId: "run-anchor-test",
+      statePath,
+      launchCwd: LAUNCH_CWD,
+      launchedAtMs: Date.now(),
+      expectedSessionId: null,
+      pollMs: 40,
+    });
+
+    writeJsonl(activePath, [
+      { type: "permission-mode", sessionId: active, cwd: LAUNCH_CWD },
+    ]);
+    utimesSync(activePath, Date.now() / 1000, Date.now() / 1000);
+    await new Promise((r) => setTimeout(r, 160));
+
+    let state = JSON.parse(readFileSync(statePath, "utf-8"));
+    expect(state.session_id).toBeNull();
+    expect(state.last_prompt).toBeNull();
+
+    writeJsonl(activePath, [
+      { type: "permission-mode", sessionId: active, cwd: LAUNCH_CWD },
+      makePromptLine("now it is resumable", "2026-04-21T13:20:00Z"),
+    ]);
+    utimesSync(activePath, Date.now() / 1000, Date.now() / 1000);
+    await new Promise((r) => setTimeout(r, 200));
+    handle.stop();
+
+    state = JSON.parse(readFileSync(statePath, "utf-8"));
+    expect(state.session_id).toBe(active);
+    expect(state.last_prompt).toBe("now it is resumable");
+
+    rmSync(home, { recursive: true, force: true });
+    rmSync(runtimeDir, { recursive: true, force: true });
+  });
 });
 
 describe("runtime state persistence", () => {
@@ -572,7 +657,13 @@ describe("runtime state persistence", () => {
       replay_mode: "last_prompt",
       custom_prompt: null,
       started_at: "2026-04-20T00:00:00Z",
+      ccswap_pid: null,
       claude_pid: null,
+      swap_pending: false,
+      swap_reason: null,
+      swap_requested_at: null,
+      last_activity_at: null,
+      safe_to_restart: false,
     });
 
     const loaded = load(path, "run-x");

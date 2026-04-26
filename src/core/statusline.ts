@@ -19,6 +19,10 @@ interface ClaudeSettings {
   [key: string]: unknown;
 }
 
+export interface UsageCaptureSettingsOptions {
+  userSettingsPath?: string;
+}
+
 function userClaudeSettingsPath(): string {
   return join(homedir(), ".claude", "settings.json");
 }
@@ -31,7 +35,10 @@ function ccswapCliPath(): string {
   return process.env["CCSWAP_CLI"] || process.argv[1] || "ccswap";
 }
 
-function buildCaptureCommand(accountName: string, passthroughCommand: string | null): string {
+function buildCaptureCommand(
+  accountName: string,
+  passthroughCommand: string | null,
+): string {
   const parts = [
     shellQuote(process.execPath),
     shellQuote(ccswapCliPath()),
@@ -49,6 +56,45 @@ function buildCaptureCommand(accountName: string, passthroughCommand: string | n
 function readSettings(path: string): ClaudeSettings {
   if (!existsSync(path)) return {};
   return readJson<ClaudeSettings>(path, {});
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseInlineSettings(value: string): ClaudeSettings {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return isRecord(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function readSettingsSource(value: string): ClaudeSettings {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("{")) return parseInlineSettings(trimmed);
+  return readSettings(value);
+}
+
+function mergeSettings(base: ClaudeSettings, override: ClaudeSettings): ClaudeSettings {
+  const merged: ClaudeSettings = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    const existing = merged[key];
+    if (isRecord(existing) && isRecord(value)) {
+      merged[key] = mergeSettings(existing, value);
+      continue;
+    }
+    merged[key] = value;
+  }
+  return merged;
+}
+
+function loadEffectiveSettings(args: string[], options: UsageCaptureSettingsOptions): ClaudeSettings {
+  const userSettings = readSettings(options.userSettingsPath ?? userClaudeSettingsPath());
+  const cliSettingsSource = extractSettingsPath(args);
+  if (!cliSettingsSource) return userSettings;
+  return mergeSettings(userSettings, readSettingsSource(cliSettingsSource));
 }
 
 export function extractSettingsPath(args: string[]): string | null {
@@ -83,9 +129,9 @@ export function writeUsageCaptureSettings(
   account: AccountData,
   runtimeSettingsPath: string,
   args: string[],
+  options: UsageCaptureSettingsOptions = {},
 ): void {
-  const basePath = extractSettingsPath(args) ?? userClaudeSettingsPath();
-  const base = readSettings(basePath);
+  const base = loadEffectiveSettings(args, options);
   const original = base.statusLine;
   const originalCommand =
     original?.type === "command" &&

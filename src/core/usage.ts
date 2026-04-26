@@ -9,6 +9,7 @@ import {
   writeSync,
   closeSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { platform } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -73,9 +74,15 @@ interface UsageData {
 interface UsageCacheFile {
   data?: UsageData;
   timestamp?: number;
+  credentialFingerprint?: string;
   rateLimitedCount?: number;
   retryAfterUntil?: number;
   lastGoodData?: UsageData;
+}
+
+interface UsageCacheIdentity {
+  accessToken?: string | null;
+  subscriptionType?: string | null;
 }
 
 export function accountUsageCachePath(account: AccountData): string {
@@ -107,6 +114,24 @@ function readCacheFile(path: string): UsageCacheFile | null {
   } catch {
     return null;
   }
+}
+
+export function usageCredentialFingerprint(accessToken: string | null | undefined): string | null {
+  if (!accessToken) return null;
+  return createHash("sha256").update(accessToken).digest("hex");
+}
+
+function cacheMatchesIdentity(raw: UsageCacheFile, identity: UsageCacheIdentity = {}): boolean {
+  const expectedFingerprint = usageCredentialFingerprint(identity.accessToken);
+  if (expectedFingerprint && raw.credentialFingerprint) {
+    return raw.credentialFingerprint === expectedFingerprint;
+  }
+  const expectedPlanName = usagePlanName(identity.subscriptionType);
+  if (!raw.credentialFingerprint && expectedPlanName) {
+    const snapshot = snapshotFromPayload(raw.data ?? raw.lastGoodData, raw.timestamp ?? null);
+    if (snapshot.plan_name && snapshot.plan_name !== expectedPlanName) return false;
+  }
+  return true;
 }
 
 function resetHasPassed(resetAt: string | null, nowMs: number): boolean {
@@ -146,9 +171,10 @@ function snapshotFromPayload(
   };
 }
 
-export function parseUsageCache(path: string): UsageSnapshot {
+export function parseUsageCache(path: string, identity: UsageCacheIdentity = {}): UsageSnapshot {
   const raw = readCacheFile(path);
   if (!raw) return emptySnapshot();
+  if (!cacheMatchesIdentity(raw, identity)) return emptySnapshot();
   const data = raw.data ?? null;
   const lastGood = raw.lastGoodData ?? null;
   let payload: UsageData | null;
@@ -163,9 +189,9 @@ export function parseUsageCache(path: string): UsageSnapshot {
   return snapshotFromPayload(payload ?? undefined, timestamp);
 }
 
-export function loadUsageCache(path: string): UsageSnapshot {
+export function loadUsageCache(path: string, identity: UsageCacheIdentity = {}): UsageSnapshot {
   if (!existsSync(path)) return emptySnapshot();
-  return parseUsageCache(path);
+  return parseUsageCache(path, identity);
 }
 
 function usageRetryUntil(raw: UsageCacheFile): number | null {
@@ -186,10 +212,12 @@ function usageRetryUntil(raw: UsageCacheFile): number | null {
 export function readUsageCacheState(
   cachePath: string,
   nowMs: number,
+  identity: UsageCacheIdentity = {},
 ): { snapshot: UsageSnapshot; fresh: boolean } | null {
   const raw = readCacheFile(cachePath);
   if (!raw) return null;
-  const snapshot = parseUsageCache(cachePath);
+  if (!cacheMatchesIdentity(raw, identity)) return null;
+  const snapshot = parseUsageCache(cachePath, identity);
   const retryUntil = usageRetryUntil(raw);
   if (retryUntil !== null && nowMs < retryUntil) {
     return { snapshot, fresh: true };
@@ -281,15 +309,19 @@ function releaseLock(lockPath: string): void {
   }
 }
 
-async function waitForFreshCache(cachePath: string, lockPath: string): Promise<UsageSnapshot | null> {
+async function waitForFreshCache(
+  cachePath: string,
+  lockPath: string,
+  identity: UsageCacheIdentity = {},
+): Promise<UsageSnapshot | null> {
   const deadline = Date.now() + USAGE_CACHE_LOCK_WAIT_MS;
   while (Date.now() < deadline) {
     await sleep(USAGE_CACHE_LOCK_POLL_MS);
-    const state = readUsageCacheState(cachePath, Date.now());
+    const state = readUsageCacheState(cachePath, Date.now(), identity);
     if (state?.fresh) return state.snapshot;
     if (!existsSync(lockPath)) break;
   }
-  const final = readUsageCacheState(cachePath, Date.now());
+  const final = readUsageCacheState(cachePath, Date.now(), identity);
   return final?.snapshot ?? null;
 }
 
@@ -398,6 +430,7 @@ export function captureStatusLineUsage(
   planName: string | null,
   input: StatusLineRateLimitsInput,
   now = Date.now(),
+  credentialFingerprint: string | null = null,
 ): boolean {
   const fiveHour = readStatusLineWindow(input, "five_hour");
   const sevenDay = readStatusLineWindow(input, "seven_day");
@@ -410,7 +443,12 @@ export function captureStatusLineUsage(
     sevenDayResetAt: sevenDay.resetAt,
     source: "statusline",
   };
-  writeCacheFile(cachePath, { data: result, timestamp: now, lastGoodData: result });
+  writeCacheFile(cachePath, {
+    data: result,
+    timestamp: now,
+    lastGoodData: result,
+    credentialFingerprint: credentialFingerprint ?? undefined,
+  });
   return true;
 }
 
@@ -424,20 +462,22 @@ export async function refreshUsageCache(
   const { force = false, env = process.env } = options;
   if (!accessToken || usingCustomApiEndpoint(env)) return false;
 
-  let state = force ? null : readUsageCacheState(cachePath, Date.now());
+  const identity = { accessToken, subscriptionType };
+  const credentialFingerprint = usageCredentialFingerprint(accessToken) ?? undefined;
+  let state = force ? null : readUsageCacheState(cachePath, Date.now(), identity);
   if (state?.fresh) return true;
-  if (force) state = readUsageCacheState(cachePath, Date.now());
+  if (force) state = readUsageCacheState(cachePath, Date.now(), identity);
 
   const lockStatus = tryAcquireLock(lockPath);
   if (lockStatus === "busy") {
     if (state) return true;
-    return (await waitForFreshCache(cachePath, lockPath)) !== null;
+    return (await waitForFreshCache(cachePath, lockPath, identity)) !== null;
   }
   const holdsLock = lockStatus === "acquired";
 
   try {
     if (!force) {
-      const refreshed = readUsageCacheState(cachePath, Date.now());
+      const refreshed = readUsageCacheState(cachePath, Date.now(), identity);
       if (refreshed?.fresh) return true;
     }
 
@@ -472,6 +512,7 @@ export async function refreshUsageCache(
       const payload: UsageCacheFile = {
         data: failureResult,
         timestamp: now,
+        credentialFingerprint,
       };
       if (isRateLimited && rateLimitedCount > 0) payload.rateLimitedCount = rateLimitedCount;
       if (retryAfterUntil !== undefined) payload.retryAfterUntil = retryAfterUntil;
@@ -490,7 +531,7 @@ export async function refreshUsageCache(
       sevenDayResetAt: sevenDay.resetAt,
       source: "oauth",
     };
-    writeCacheFile(cachePath, { data: result, timestamp: now, lastGoodData: result });
+    writeCacheFile(cachePath, { data: result, timestamp: now, lastGoodData: result, credentialFingerprint });
     return true;
   } finally {
     if (holdsLock) releaseLock(lockPath);

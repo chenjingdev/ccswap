@@ -1,15 +1,17 @@
 import { useCallback, useState } from "react";
 
-import { removeAccount as removeAccountCore } from "../core/accounts.js";
+import { accountNeedsRelogin, removeAccount as removeAccountCore } from "../core/accounts.js";
+import { promoteActiveAfterAccountRemoval } from "../core/active-account.js";
 import type { AccountData, AppConfigData } from "../core/config.js";
 import { loadConfig, saveConfig } from "../core/config.js";
 import { getAccountCredential, parseStoredCredential } from "../core/credentials.js";
 import { loadState, saveState, type AppStateData } from "../core/state.js";
-import { accountUsageCachePath, loadUsageCache, type UsageSnapshot } from "../core/usage.js";
+import { accountUsageCachePath, loadUsageCache, usagePlanName, type UsageSnapshot } from "../core/usage.js";
 
 export interface AccountView {
   account: AccountData;
   loggedIn: boolean;
+  needsRelogin: boolean;
   subscriptionType: string | null;
   usage: UsageSnapshot;
 }
@@ -32,11 +34,16 @@ export function useConfigState(): ConfigStateApi {
     return cfg.accounts.map((account) => {
       const credential = getAccountCredential(account);
       const parsed = parseStoredCredential(credential?.secret ?? null);
+      const usage = loadUsageCache(accountUsageCachePath(account), {
+        accessToken: parsed.access_token,
+        subscriptionType: parsed.subscription_type,
+      });
       return {
         account,
         loggedIn: credential !== null,
-        subscriptionType: parsed.subscription_type,
-        usage: loadUsageCache(accountUsageCachePath(account)),
+        needsRelogin: accountNeedsRelogin(account),
+        subscriptionType: usage.plan_name ?? usagePlanName(parsed.subscription_type) ?? parsed.subscription_type,
+        usage,
       };
     });
   }, []);
@@ -54,9 +61,7 @@ export function useConfigState(): ConfigStateApi {
     try {
       const current = loadConfig();
       removeAccountCore(current, name);
-      const st = loadState();
-      if (st.active_account === name) st.active_account = null;
-      if (st.last_account === name) st.last_account = null;
+      const st = promoteActiveAfterAccountRemoval(current, loadState(), name);
       saveState(st);
       setConfig(current);
       setAccounts(buildViews(current));

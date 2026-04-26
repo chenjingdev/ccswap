@@ -9,6 +9,9 @@ export interface RunOptions {
 
 export async function runClaudeCommand(opts: RunOptions): Promise<number> {
   const config = loadConfig();
+  if (process.env.CCSWAP_REAL_CLAUDE) {
+    config.claude_bin = process.env.CCSWAP_REAL_CLAUDE;
+  }
   const state = loadState();
   if (opts.account) {
     state.active_account = opts.account;

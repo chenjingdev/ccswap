@@ -1,4 +1,5 @@
 import { addAccount, getAccountStatus, removeAccount } from "../core/accounts.js";
+import { promoteActiveAfterAccountRemoval } from "../core/active-account.js";
 import { loadConfig } from "../core/config.js";
 import { loadState, saveState } from "../core/state.js";
 
@@ -36,9 +37,7 @@ export function runAccountRemove(name: string): number {
   const state = loadState();
   try {
     removeAccount(config, name);
-    if (state.active_account === name) state.active_account = null;
-    if (state.last_account === name) state.last_account = null;
-    saveState(state);
+    saveState(promoteActiveAfterAccountRemoval(config, state, name));
     console.log(`removed account "${name}"`);
     return 0;
   } catch (err) {

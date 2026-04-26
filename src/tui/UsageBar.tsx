@@ -12,11 +12,19 @@ function barColor(percent: number): "green" | "yellow" | "red" {
 }
 
 export function UsageBar({ percent, width }: Props) {
+  if (percent === null) {
+    return (
+      <>
+        <Text color="gray">{"░".repeat(width)}</Text>
+        <Text color="gray"> --</Text>
+      </>
+    );
+  }
   const normalized = percent ?? 0;
   const filled = Math.max(0, Math.min(width, Math.round((normalized / 100) * width)));
   const empty = width - filled;
   const color = barColor(normalized);
-  const label = ` ${String(normalized).padStart(3)}%`;
+  const label = ` ${normalized}%`;
   return (
     <>
       <Text color={color}>{"▇".repeat(filled)}</Text>

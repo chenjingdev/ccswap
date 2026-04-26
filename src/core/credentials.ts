@@ -1,12 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 
 import { Entry, findCredentials } from "@napi-rs/keyring";
 
 import { CLAUDE_KEYCHAIN_SERVICE } from "./constants.js";
-import type { AccountData } from "./config.js";
+import type { AccountData, ClaudeAccountInfoData } from "./config.js";
 import { defaultKeychainAccount } from "./paths.js";
 
 export interface StoredCredential {
@@ -166,19 +166,47 @@ function safeDelete(service: string, account: string): void {
   }
 }
 
-export interface ClaudeAccountInfo {
-  emailAddress: string | null;
-  displayName: string | null;
-  accountUuid: string | null;
-}
-
 function claudeJsonPath(): string {
   const override = process.env.CLAUDE_CONFIG_DIR;
   if (override) return join(override, ".claude.json");
   return join(homedir(), ".claude.json");
 }
 
-export function getStandardClaudeAccountInfo(): ClaudeAccountInfo | null {
+function nullableString(record: Record<string, unknown>, key: string): string | null {
+  return typeof record[key] === "string" && record[key] ? record[key] : null;
+}
+
+function readClaudeAccountInfo(value: unknown): ClaudeAccountInfoData | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const rec = value as Record<string, unknown>;
+  return {
+    emailAddress: nullableString(rec, "emailAddress"),
+    displayName: nullableString(rec, "displayName"),
+    accountUuid: nullableString(rec, "accountUuid"),
+    organizationUuid: nullableString(rec, "organizationUuid"),
+    organizationName: nullableString(rec, "organizationName"),
+    organizationRole: nullableString(rec, "organizationRole"),
+    workspaceRole: nullableString(rec, "workspaceRole"),
+  };
+}
+
+function writeableClaudeAccountInfo(account: AccountData): Record<string, string> {
+  const info = account.claude_account ?? null;
+  const result: Record<string, string> = {};
+  const write = (key: keyof ClaudeAccountInfoData, value: string | null | undefined): void => {
+    if (value) result[key] = value;
+  };
+  write("emailAddress", account.email);
+  write("displayName", info?.displayName ?? account.email);
+  write("accountUuid", info?.accountUuid);
+  write("organizationUuid", info?.organizationUuid);
+  write("organizationName", info?.organizationName);
+  write("organizationRole", info?.organizationRole);
+  write("workspaceRole", info?.workspaceRole);
+  return result;
+}
+
+export function getStandardClaudeAccountInfo(): ClaudeAccountInfoData | null {
   let raw: string;
   try {
     raw = readFileSync(claudeJsonPath(), "utf-8");
@@ -194,12 +222,30 @@ export function getStandardClaudeAccountInfo(): ClaudeAccountInfo | null {
   if (typeof parsed !== "object" || parsed === null) return null;
   const oa = (parsed as Record<string, unknown>)["oauthAccount"];
   if (typeof oa !== "object" || oa === null) return null;
-  const rec = oa as Record<string, unknown>;
-  return {
-    emailAddress: typeof rec["emailAddress"] === "string" ? (rec["emailAddress"] as string) : null,
-    displayName: typeof rec["displayName"] === "string" ? (rec["displayName"] as string) : null,
-    accountUuid: typeof rec["accountUuid"] === "string" ? (rec["accountUuid"] as string) : null,
-  };
+  return readClaudeAccountInfo(oa);
+}
+
+function updateStandardClaudeAccountInfo(account: AccountData): void {
+  if (!account.email) return;
+  const path = claudeJsonPath();
+  let parsed: Record<string, unknown> = {};
+  try {
+    const raw = readFileSync(path, "utf-8");
+    const value = JSON.parse(raw) as unknown;
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      parsed = value as Record<string, unknown>;
+    }
+  } catch {
+    parsed = {};
+  }
+
+  parsed["oauthAccount"] = writeableClaudeAccountInfo(account);
+
+  try {
+    writeFileSync(path, JSON.stringify(parsed, null, 2) + "\n", "utf-8");
+  } catch {
+    // Best-effort only. Credential activation is still the source of truth.
+  }
 }
 
 export function getStandardClaudeCredential(): StoredCredential | null {
@@ -256,9 +302,12 @@ export function activateAccountCredential(account: AccountData): boolean {
   const user = source.account || defaultKeychainAccount();
   const current = getStandardClaudeCredential();
   if (current && current.secret === source.secret && current.account === user) {
+    updateStandardClaudeAccountInfo(account);
     return true;
   }
-  return safeSet(CLAUDE_KEYCHAIN_SERVICE, user, source.secret);
+  const ok = safeSet(CLAUDE_KEYCHAIN_SERVICE, user, source.secret);
+  if (ok) updateStandardClaudeAccountInfo(account);
+  return ok;
 }
 
 export function deleteAccountCredential(account: AccountData): void {

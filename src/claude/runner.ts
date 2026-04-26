@@ -1,6 +1,7 @@
 import type { IPty } from "node-pty";
 import * as nodePty from "node-pty";
 
+import { detectClaudeAuthFailure, type ClaudeAuthFailure } from "./auth-failure.js";
 import { LimitDetector } from "./limit-detector.js";
 import { preparePty } from "./pty-prep.js";
 
@@ -14,18 +15,33 @@ export interface RunnerOptions {
   shouldArmLimit?: () => boolean;
   shouldConfirmLimit?: () => Promise<boolean> | boolean;
   shouldProactivelySwap?: () => Promise<boolean> | boolean;
+  shouldApplyRequestedAccount?: () => Promise<boolean> | boolean;
+  onProactiveSwap?: () => Promise<boolean> | boolean;
+  onProactiveSwapPending?: () => void;
+  onProactiveSwapBoundary?: () => void;
+  onRequestedAccountPending?: () => void;
+  onRequestedAccountBoundary?: () => void;
+  onAuthFailure?: (failure: ClaudeAuthFailure) => void;
+  proactiveQuietMs?: number;
+  proactiveMaxWaitMs?: number;
 }
 
 export interface RunnerResult {
   exitCode: number;
   limitHit: boolean;
   proactiveSwap: boolean;
+  proactiveSwapNeedsPrompt: boolean;
+  requestedAccountSwap: boolean;
+  requestedAccountSwapNeedsPrompt: boolean;
+  authFailure: ClaudeAuthFailure | null;
 }
 
 const GRACEFUL_EXIT_PAYLOADS = ["\x03", "\x1b", "1\n", "/exit\n", "exit\n"];
 const LIMIT_GRACE_MS = 1000;
 const LIMIT_TERM_DELAY_MS = 1000;
 const LIMIT_KILL_DELAY_MS = 2500;
+const PROACTIVE_QUIET_MS = 1500;
+const PROACTIVE_MAX_WAIT_MS = 30000;
 
 function getWinsize(): { cols: number; rows: number } {
   return {
@@ -59,16 +75,45 @@ export async function runClaude(opts: RunnerOptions): Promise<RunnerResult> {
   let limitKillScheduled = false;
   let limitConfirmed = false;
   let proactiveSwapRequested = false;
+  let proactiveSwapNeedsPrompt = false;
   let proactiveCheckInFlight = false;
+  let proactivePending = false;
+  let proactivePendingAt: number | null = null;
+  let requestedAccountSwapRequested = false;
+  let requestedAccountSwapNeedsPrompt = false;
+  let requestedAccountCheckInFlight = false;
+  let requestedAccountPending = false;
+  let requestedAccountPendingAt: number | null = null;
+  let authFailure: ClaudeAuthFailure | null = null;
+  let lastActivityAt = Date.now();
+  const proactiveQuietMs = Math.max(0, opts.proactiveQuietMs ?? PROACTIVE_QUIET_MS);
+  const proactiveMaxWaitMs = Math.max(0, opts.proactiveMaxWaitMs ?? PROACTIVE_MAX_WAIT_MS);
 
   const armed = (): boolean => (opts.shouldArmLimit ? opts.shouldArmLimit() : true);
+  const isQuiet = (now = Date.now()): boolean => now - lastActivityAt >= proactiveQuietMs;
+  const markActivity = (): void => {
+    lastActivityAt = Date.now();
+  };
 
   const onDataSub = pty.onData((chunk: string) => {
+    markActivity();
     stdout.write(chunk);
+    if (!authFailure) {
+      const detected = detectClaudeAuthFailure(chunk);
+      if (detected) {
+        authFailure = detected;
+        try {
+          opts.onAuthFailure?.(detected);
+        } catch {
+          // Auth-state reporting must not block the user's Claude session.
+        }
+      }
+    }
     if (armed()) detector.feed(chunk);
   });
 
   const onStdin = (chunk: Buffer | string): void => {
+    markActivity();
     try {
       pty.write(typeof chunk === "string" ? chunk : chunk.toString("utf-8"));
     } catch {
@@ -97,6 +142,10 @@ export async function runClaude(opts: RunnerOptions): Promise<RunnerResult> {
     void processProactiveTick();
   }, 2_000);
 
+  const requestedAccountPoll = setInterval(() => {
+    void processRequestedAccountTick();
+  }, 500);
+
   const announceSwitch = (): void => {
     process.stderr.write("\r\n[ccswap] Claude limit detected. Rotating to the next account...\r\n");
   };
@@ -111,33 +160,146 @@ export async function runClaude(opts: RunnerOptions): Promise<RunnerResult> {
     }
   };
 
+  const requestProactiveExit = (): void => {
+    if (limitExitRequested || proactiveSwapRequested || requestedAccountSwapRequested) return;
+    proactiveSwapRequested = true;
+    try {
+      opts.onProactiveSwapBoundary?.();
+    } catch {
+      // Runtime-state reporting must not block the actual relaunch.
+    }
+    process.stderr.write("\r\n[ccswap] Usage threshold reached. Restarting Claude at a quiet boundary...\r\n");
+    tryGracefulExit();
+    setTimeout(() => {
+      try {
+        pty.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+    }, LIMIT_TERM_DELAY_MS);
+    setTimeout(() => {
+      try {
+        pty.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+    }, LIMIT_KILL_DELAY_MS);
+  };
+
+  const requestRequestedAccountExit = (): void => {
+    if (limitExitRequested || proactiveSwapRequested || requestedAccountSwapRequested) return;
+    requestedAccountSwapRequested = true;
+    try {
+      opts.onRequestedAccountBoundary?.();
+    } catch {
+      // Runtime-state reporting must not block the actual relaunch.
+    }
+    process.stderr.write("\r\n[ccswap] Account switch requested. Restarting Claude at a quiet boundary...\r\n");
+    tryGracefulExit();
+    setTimeout(() => {
+      try {
+        pty.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+    }, LIMIT_TERM_DELAY_MS);
+    setTimeout(() => {
+      try {
+        pty.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+    }, LIMIT_KILL_DELAY_MS);
+  };
+
+  const maybeExitAtProactiveBoundary = (now = Date.now()): void => {
+    if (!proactivePending || proactivePendingAt === null || limitExitRequested || proactiveSwapRequested || requestedAccountSwapRequested) return;
+    const quietForMs = now - lastActivityAt;
+    const pendingForMs = now - proactivePendingAt;
+    if (quietForMs >= proactiveQuietMs || pendingForMs >= proactiveMaxWaitMs) {
+      requestProactiveExit();
+    }
+  };
+
+  const maybeExitAtRequestedAccountBoundary = (now = Date.now()): void => {
+    if (
+      !requestedAccountPending ||
+      requestedAccountPendingAt === null ||
+      limitExitRequested ||
+      proactiveSwapRequested ||
+      requestedAccountSwapRequested
+    ) {
+      return;
+    }
+    const quietForMs = now - lastActivityAt;
+    const pendingForMs = now - requestedAccountPendingAt;
+    if (quietForMs >= proactiveQuietMs || pendingForMs >= proactiveMaxWaitMs) {
+      requestRequestedAccountExit();
+    }
+  };
+
   async function processProactiveTick(): Promise<void> {
-    if (!opts.shouldProactivelySwap || limitExitRequested || proactiveSwapRequested || proactiveCheckInFlight) return;
+    if (!opts.shouldProactivelySwap || limitExitRequested || proactiveSwapRequested || requestedAccountSwapRequested || proactiveCheckInFlight) return;
     proactiveCheckInFlight = true;
     try {
+      if (proactivePending) {
+        maybeExitAtProactiveBoundary();
+        return;
+      }
       const shouldSwap = await opts.shouldProactivelySwap();
-      if (!shouldSwap || limitExitRequested || proactiveSwapRequested) return;
-      proactiveSwapRequested = true;
-      process.stderr.write("\r\n[ccswap] Usage threshold reached. Switching accounts before the next prompt...\r\n");
-      tryGracefulExit();
-      setTimeout(() => {
-        try {
-          pty.kill("SIGTERM");
-        } catch {
-          // ignore
-        }
-      }, LIMIT_TERM_DELAY_MS);
-      setTimeout(() => {
-        try {
-          pty.kill("SIGKILL");
-        } catch {
-          // ignore
-        }
-      }, LIMIT_KILL_DELAY_MS);
+      if (!shouldSwap || limitExitRequested || proactiveSwapRequested || requestedAccountSwapRequested) return;
+      if (opts.onProactiveSwap) {
+        const handled = await opts.onProactiveSwap();
+        if (handled) return;
+      }
+      if (limitExitRequested || proactiveSwapRequested || requestedAccountSwapRequested) return;
+      proactivePending = true;
+      proactivePendingAt = Date.now();
+      proactiveSwapNeedsPrompt = !isQuiet(proactivePendingAt);
+      try {
+        opts.onProactiveSwapPending?.();
+      } catch {
+        // Runtime-state reporting must not block the actual relaunch.
+      }
+      maybeExitAtProactiveBoundary();
     } catch {
       // Proactive swapping is best-effort; limit detection remains the hard stop.
     } finally {
       proactiveCheckInFlight = false;
+    }
+  }
+
+  async function processRequestedAccountTick(): Promise<void> {
+    if (
+      !opts.shouldApplyRequestedAccount ||
+      limitExitRequested ||
+      proactiveSwapRequested ||
+      requestedAccountSwapRequested ||
+      requestedAccountCheckInFlight
+    ) {
+      return;
+    }
+    requestedAccountCheckInFlight = true;
+    try {
+      if (requestedAccountPending) {
+        maybeExitAtRequestedAccountBoundary();
+        return;
+      }
+      const shouldSwap = await opts.shouldApplyRequestedAccount();
+      if (!shouldSwap || limitExitRequested || proactiveSwapRequested || requestedAccountSwapRequested) return;
+      requestedAccountPending = true;
+      requestedAccountPendingAt = Date.now();
+      requestedAccountSwapNeedsPrompt = !isQuiet(requestedAccountPendingAt);
+      try {
+        opts.onRequestedAccountPending?.();
+      } catch {
+        // Runtime-state reporting must not block the actual relaunch.
+      }
+      maybeExitAtRequestedAccountBoundary();
+    } catch {
+      // Manual session switching is best-effort; hard limit handling remains authoritative.
+    } finally {
+      requestedAccountCheckInFlight = false;
     }
   }
 
@@ -198,12 +360,21 @@ export async function runClaude(opts: RunnerOptions): Promise<RunnerResult> {
     pty.onExit(({ exitCode }) => {
       clearInterval(limitPoll);
       clearInterval(proactivePoll);
+      clearInterval(requestedAccountPoll);
       onDataSub.dispose();
       stdin.off("data", onStdin);
       stdout.off("resize", onResize);
       if (stdin.isTTY) stdin.setRawMode(wasRaw);
       stdin.pause();
-      resolve({ exitCode: exitCode ?? 0, limitHit: limitConfirmed, proactiveSwap: proactiveSwapRequested });
+      resolve({
+        exitCode: exitCode ?? 0,
+        limitHit: limitConfirmed,
+        proactiveSwap: proactiveSwapRequested,
+        proactiveSwapNeedsPrompt,
+        requestedAccountSwap: requestedAccountSwapRequested,
+        requestedAccountSwapNeedsPrompt,
+        authFailure,
+      });
     });
   });
 }

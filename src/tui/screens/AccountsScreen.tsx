@@ -32,18 +32,24 @@ function layoutColumns(totalWidth: number): Column[] {
   const colActive = 2; // ★ / ·
   const colPlan = 8;
   const colUpdated = 12;
-  const colAccount = Math.max(18, Math.min(32, Math.floor(inner * 0.3)));
-  const gap = 5;
-  const used = colMark + colActive + colAccount + colPlan + colUpdated + gap;
-  const colUsage = Math.max(28, inner - used);
+  const gap = 6;
+  const fixedWithoutAccount = colMark + colActive + colPlan + colUpdated + gap;
+  const colAccount = Math.max(18, Math.min(34, Math.floor(inner * 0.3)));
+  const remaining = inner - fixedWithoutAccount - colAccount;
+  const colUsage = Math.max(14, Math.floor(remaining / 2));
   return [
     { label: "", width: colMark },
     { label: "", width: colActive },
     { label: "Account", width: colAccount },
     { label: "Plan", width: colPlan },
-    { label: "Usage", width: colUsage },
+    { label: "Usage(5h)", width: colUsage },
+    { label: "Usage(7d)", width: colUsage },
     { label: "Updated", width: colUpdated },
   ];
+}
+
+function usageBarWidth(columnWidth: number): number {
+  return Math.max(4, columnWidth - 5);
 }
 
 export function AccountsScreen({ accounts, state, selectedIndex, width }: Props) {
@@ -77,7 +83,7 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
           const isSelected = idx === selectedIndex;
           const isActive = state.active_account === view.account.name;
           const autoSwap = view.account.auto_swap;
-          const nameColor = !view.loggedIn ? "red" : autoSwap ? "green" : "gray";
+          const nameColor = !view.loggedIn || view.needsRelogin ? "red" : autoSwap ? "green" : "gray";
           const suffix = !autoSwap ? " (off)" : "";
           const markerBg = isSelected ? "magenta" : undefined;
           const activeIcon = isActive ? "★" : "·";
@@ -103,19 +109,25 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
                 <Text color="gray">{fitText(view.subscriptionType ?? "-", columns[3]!.width)}</Text>
               </Box>
               <Box width={columns[4]!.width} marginRight={1}>
-                {view.loggedIn ? (
-                  <Text>
-                    <Text color="gray">5h </Text>
-                    <UsageBar percent={view.usage.five_hour_pct} width={10} />
-                    <Text color="gray">   7d </Text>
-                    <UsageBar percent={view.usage.seven_day_pct} width={10} />
-                  </Text>
+                {view.needsRelogin ? (
+                  <Text color="red">re-login</Text>
+                ) : view.loggedIn ? (
+                  <UsageBar percent={view.usage.five_hour_pct} width={usageBarWidth(columns[4]!.width)} />
                 ) : (
                   <Text color="red">login needed</Text>
                 )}
               </Box>
-              <Box width={columns[5]!.width}>
-                <Text color="gray">{fitText(formatAgo(view.usage.cache_timestamp_ms) || "--", columns[5]!.width)}</Text>
+              <Box width={columns[5]!.width} marginRight={1}>
+                {view.needsRelogin ? (
+                  <Text color="red">required</Text>
+                ) : view.loggedIn ? (
+                  <UsageBar percent={view.usage.seven_day_pct} width={usageBarWidth(columns[5]!.width)} />
+                ) : (
+                  <Text color="red">login needed</Text>
+                )}
+              </Box>
+              <Box width={columns[6]!.width}>
+                <Text color="gray">{fitText(formatAgo(view.usage.cache_timestamp_ms) || "--", columns[6]!.width)}</Text>
               </Box>
             </Box>
           );
@@ -131,10 +143,12 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
         </Text>
       </Box>
       {selected ? (() => {
-        const eligible = accounts.filter((v) => v.account.auto_swap && v.loggedIn);
+        const eligible = accounts.filter((v) => v.account.auto_swap && v.loggedIn && !v.needsRelogin);
         const eligibleRank = eligible.findIndex((v) => v.account.name === selected.account.name);
         const swapStatus = !selected.loggedIn
           ? "excluded · login needed"
+          : selected.needsRelogin
+          ? "excluded · re-login required"
           : !selected.account.auto_swap
           ? "excluded · auto-swap off"
           : eligibleRank >= 0
@@ -154,10 +168,16 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
                   state.active_account === selected.account.name ? "Active" : "Inactive",
                   selected.account.auto_swap ? "auto-swap on" : "auto-swap off",
                   `plan ${selected.subscriptionType ?? "-"}`,
-                  selected.loggedIn ? "logged in" : "no login",
+                  selected.needsRelogin ? "re-login required" : selected.loggedIn ? "logged in" : "no login",
                 ].join(" · ")}
               </Text>
             </Text>
+            {selected.needsRelogin ? (
+              <Text>
+                <Text color="gray" bold>Auth issue  </Text>
+                <Text color="red">{selected.account.auth_error_reason ?? "re-login required"}</Text>
+              </Text>
+            ) : null}
             <Text>
               <Text color="gray" bold>Email       </Text>
               <Text color="gray">{selected.account.email ?? "- (re-login to populate)"}</Text>

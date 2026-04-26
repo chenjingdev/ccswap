@@ -1,5 +1,5 @@
 import type { AccountData, AppConfigData } from "./config.js";
-import { createAccount, findAccount, saveConfig } from "./config.js";
+import { createAccount, findAccount, loadConfig, saveConfig } from "./config.js";
 import { deleteAccountCredential, getAccountCredential } from "./credentials.js";
 
 export function addAccount(config: AppConfigData, name: string): AccountData {
@@ -23,6 +23,12 @@ export function deriveUniqueAccountName(config: AppConfigData, hint: string | nu
   return `${base}-${Date.now()}`;
 }
 
+export function findAccountByEmail(config: AppConfigData, email: string | null): AccountData | undefined {
+  const normalized = email?.trim().toLowerCase();
+  if (!normalized) return undefined;
+  return config.accounts.find((account) => account.email?.trim().toLowerCase() === normalized);
+}
+
 export function removeAccount(config: AppConfigData, name: string): void {
   const idx = config.accounts.findIndex((a) => a.name === name);
   if (idx === -1) throw new Error(`account "${name}" not found`);
@@ -30,6 +36,25 @@ export function removeAccount(config: AppConfigData, name: string): void {
   deleteAccountCredential(account);
   config.accounts.splice(idx, 1);
   saveConfig(config);
+}
+
+export function accountNeedsRelogin(account: AccountData): boolean {
+  return Boolean(account.auth_error_at);
+}
+
+export function clearAccountAuthError(account: AccountData): void {
+  delete account.auth_error_at;
+  delete account.auth_error_reason;
+}
+
+export function markAccountAuthError(name: string, reason: string, at = new Date().toISOString()): boolean {
+  const config = loadConfig();
+  const account = findAccount(config, name);
+  if (!account) return false;
+  account.auth_error_at = at;
+  account.auth_error_reason = reason;
+  saveConfig(config);
+  return true;
 }
 
 export interface AccountStatus {

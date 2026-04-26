@@ -3,9 +3,11 @@ import { Command } from "commander";
 import { normalizeCliArgs } from "./claude/args.js";
 import { runAccountAdd, runAccountList, runAccountRemove } from "./commands/account.js";
 import { runClaudeCommand } from "./commands/claude.js";
+import { runConnect, runConnectionStatus, runDisconnect } from "./commands/connection.js";
 import { runDashboard } from "./commands/dashboard.js";
 import { runInit } from "./commands/init.js";
 import { runLogin } from "./commands/login.js";
+import { runTokenProbe } from "./commands/token-probe.js";
 import { runUse } from "./commands/use.js";
 import { runUsageCapture } from "./commands/usage-capture.js";
 
@@ -61,6 +63,41 @@ function build(): Command {
     .action((name: string) => process.exit(runUse(name)));
 
   program
+    .command("token-probe <name>")
+    .description("experiment: run Claude with this account's OAuth token in the child env")
+    .option("--infer", "also run a tiny Claude inference after auth status succeeds")
+    .action((name: string, options: { infer?: boolean }) => {
+      process.exit(runTokenProbe(name, { infer: options.infer }));
+    });
+
+  program
+    .command("connect")
+    .description("connect plain `claude` to ccswap")
+    .option("--path <path>", "path to connect as the claude command")
+    .option("--real <path>", "real Claude binary to run behind the connection")
+    .option("--ccswap-bin <path>", "ccswap executable the connection should call")
+    .option("--force", "create a numbered backup if the default backup path exists")
+    .action((options: { path?: string; real?: string; ccswapBin?: string; force?: boolean }) => {
+      process.exit(runConnect(options));
+    });
+
+  program
+    .command("status")
+    .description("show dashboard and plain `claude` connection status")
+    .option("--path <path>", "path to inspect")
+    .action((options: { path?: string }) => {
+      process.exit(runConnectionStatus(options));
+    });
+
+  program
+    .command("disconnect")
+    .description("disconnect plain `claude` from ccswap and restore the previous command")
+    .option("--path <path>", "path to disconnect")
+    .action((options: { path?: string }) => {
+      process.exit(runDisconnect(options));
+    });
+
+  program
     .command("run")
     .description("run claude with auto-swap on limit")
     .option("--account <name>", "force this account as the initial active one")
@@ -105,22 +142,25 @@ function build(): Command {
       process.exit(runUsageCapture({ account, passthrough }));
     });
 
-  program.action(async () => {
-    process.exit(await runDashboard());
-  });
-
   return program;
 }
 
-const program = build();
-const rawArgv = process.argv.slice(2);
-if (rawArgv[0] === "usage-capture") {
-  const account = optionValue(rawArgv, "--account");
-  const passthrough = optionValue(rawArgv, "--passthrough");
-  process.exit(account ? runUsageCapture({ account, passthrough }) : 0);
+async function main(): Promise<void> {
+  const rawArgv = process.argv.slice(2);
+  if (rawArgv[0] === "usage-capture") {
+    const account = optionValue(rawArgv, "--account");
+    const passthrough = optionValue(rawArgv, "--passthrough");
+    process.exit(account ? runUsageCapture({ account, passthrough }) : 0);
+  }
+  const normalized = normalizeCliArgs(rawArgv);
+  if (normalized.length === 0) {
+    process.exit(await runDashboard());
+  }
+  const program = build();
+  await program.parseAsync([process.argv[0]!, process.argv[1]!, ...normalized]);
 }
-const normalized = normalizeCliArgs(rawArgv);
-program.parseAsync([process.argv[0]!, process.argv[1]!, ...normalized]).catch((err) => {
+
+main().catch((err) => {
   console.error(err);
   process.exit(1);
 });

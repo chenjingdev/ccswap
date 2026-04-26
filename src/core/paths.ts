@@ -19,6 +19,7 @@ function configRoot(): string {
 export const CONFIG_DIR = configRoot();
 export const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 export const STATE_PATH = join(CONFIG_DIR, "state.json");
+export const DASHBOARD_STATE_PATH = join(CONFIG_DIR, "dashboard.json");
 export const LOG_PATH = join(CONFIG_DIR, "ccswap.log");
 export const RUNTIME_DIR = join(CONFIG_DIR, "runtime");
 export const USAGE_CACHE_DIR = join(CONFIG_DIR, "usage-cache");

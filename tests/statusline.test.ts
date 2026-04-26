@@ -60,7 +60,9 @@ describe("statusline usage capture settings", () => {
       keychain_account: "account",
       email: "work@example.com",
     };
-    writeUsageCaptureSettings(account, runtime, ["--settings", base]);
+    writeUsageCaptureSettings(account, runtime, ["--settings", base], {
+      userSettingsPath: join(tmp, "missing-user-settings.json"),
+    });
     const parsed = JSON.parse(readFileSync(runtime, "utf-8")) as {
       statusLine: { command: string; padding: number };
       permissions: { allow: string[] };
@@ -70,6 +72,102 @@ describe("statusline usage capture settings", () => {
     expect(parsed.statusLine.command).toContain("usage-capture");
     expect(parsed.statusLine.command).toContain("--account 'work@example.com'");
     expect(parsed.statusLine.command).toContain("--passthrough");
+  });
+
+  it("merges inline --settings and keeps the user statusLine passthrough", () => {
+    const userSettings = join(tmp, "user-settings.json");
+    const runtime = join(tmp, "runtime-inline.json");
+    writeFileSync(
+      userSettings,
+      JSON.stringify({
+        statusLine: {
+          type: "command",
+          command: "node user-statusline.js",
+          padding: 1,
+        },
+        env: { ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
+      }),
+    );
+    const inlineSettings = JSON.stringify({
+      hooks: {
+        Stop: [
+          {
+            matcher: "",
+            hooks: [{ type: "command", command: "echo stop" }],
+          },
+        ],
+      },
+    });
+    const account: AccountData = {
+      name: "work@example.com",
+      auto_swap: true,
+      keychain_service: "service",
+      keychain_account: "account",
+      email: "work@example.com",
+    };
+
+    writeUsageCaptureSettings(account, runtime, ["--settings", inlineSettings], {
+      userSettingsPath: userSettings,
+    });
+
+    const parsed = JSON.parse(readFileSync(runtime, "utf-8")) as {
+      statusLine: { command: string; padding: number };
+      env: { ENABLE_CLAUDEAI_MCP_SERVERS: string };
+      hooks: { Stop: Array<{ hooks: Array<{ command: string }> }> };
+    };
+    const passthrough = parsed.statusLine.command.match(/--passthrough '([^']+)'/)?.[1];
+
+    expect(parsed.env.ENABLE_CLAUDEAI_MCP_SERVERS).toBe("false");
+    expect(parsed.hooks.Stop[0]?.hooks[0]?.command).toBe("echo stop");
+    expect(parsed.statusLine.padding).toBe(1);
+    expect(parsed.statusLine.command).toContain("usage-capture");
+    expect(passthrough ? Buffer.from(passthrough, "base64").toString("utf-8") : null).toBe(
+      "node user-statusline.js",
+    );
+  });
+
+  it("lets inline --settings statusLine override the user statusLine", () => {
+    const userSettings = join(tmp, "user-settings.json");
+    const runtime = join(tmp, "runtime-inline-statusline.json");
+    writeFileSync(
+      userSettings,
+      JSON.stringify({
+        statusLine: {
+          type: "command",
+          command: "node user-statusline.js",
+          padding: 1,
+        },
+      }),
+    );
+    const inlineSettings = JSON.stringify({
+      statusLine: {
+        type: "command",
+        command: "node inline-statusline.js",
+        refreshInterval: 5,
+      },
+    });
+    const account: AccountData = {
+      name: "work@example.com",
+      auto_swap: true,
+      keychain_service: "service",
+      keychain_account: "account",
+      email: "work@example.com",
+    };
+
+    writeUsageCaptureSettings(account, runtime, [`--settings=${inlineSettings}`], {
+      userSettingsPath: userSettings,
+    });
+
+    const parsed = JSON.parse(readFileSync(runtime, "utf-8")) as {
+      statusLine: { command: string; padding: number; refreshInterval: number };
+    };
+    const passthrough = parsed.statusLine.command.match(/--passthrough '([^']+)'/)?.[1];
+
+    expect(parsed.statusLine.padding).toBe(1);
+    expect(parsed.statusLine.refreshInterval).toBe(5);
+    expect(passthrough ? Buffer.from(passthrough, "base64").toString("utf-8") : null).toBe(
+      "node inline-statusline.js",
+    );
   });
 
   it("usage-capture CLI writes the account usage cache", () => {
@@ -82,6 +180,7 @@ describe("statusline usage capture settings", () => {
         accounts: [
           {
             name: accountName,
+            auth_source: "credential",
             auto_swap: true,
             keychain_service: "service",
             keychain_account: "account",

@@ -1,6 +1,8 @@
 import { render } from "ink";
 import React from "react";
 
+import { clearDashboardHeartbeat, writeDashboardHeartbeat } from "../core/dashboard-state.js";
+import { ensureClaudeShim } from "../core/shim.js";
 import { App } from "../tui/App.js";
 import { runLogin, runLoginNewAccount } from "./login.js";
 
@@ -20,14 +22,23 @@ function exitFullscreen(): void {
 }
 
 export async function runDashboard(): Promise<number> {
-  const cleanupOnFatal = (): void => exitFullscreen();
+  const initialConnection = ensureClaudeShim();
+  writeDashboardHeartbeat();
+  const heartbeat = setInterval(() => {
+    writeDashboardHeartbeat();
+  }, 2_000);
+  const cleanupOnFatal = (): void => {
+    clearInterval(heartbeat);
+    clearDashboardHeartbeat();
+    exitFullscreen();
+  };
   process.on("exit", cleanupOnFatal);
   process.on("SIGINT", () => {
-    exitFullscreen();
+    cleanupOnFatal();
     process.exit(130);
   });
   process.on("SIGTERM", () => {
-    exitFullscreen();
+    cleanupOnFatal();
     process.exit(143);
   });
 
@@ -39,6 +50,7 @@ export async function runDashboard(): Promise<number> {
       const { waitUntilExit, unmount } = render(
         React.createElement(App, {
           hasTty: Boolean(process.stdin.isTTY),
+          initialConnection,
           onLoginRequested: (name: string) => {
             action = { kind: "login", name };
             unmount();
@@ -69,5 +81,7 @@ export async function runDashboard(): Promise<number> {
     }
   } finally {
     process.off("exit", cleanupOnFatal);
+    clearInterval(heartbeat);
+    clearDashboardHeartbeat();
   }
 }

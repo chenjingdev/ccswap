@@ -34,7 +34,7 @@ export function encodeClaudeProjectDir(cwd: string): string {
 }
 
 export function claudeProjectsDir(): string {
-  return join(homedir(), ".claude", "projects");
+  return join(process.env.HOME ?? homedir(), ".claude", "projects");
 }
 
 function projectDirForCwd(cwd: string): string {
@@ -279,24 +279,27 @@ export function startSessionWatcher(opts: SessionWatcherOptions): SessionWatcher
       });
       if (!active) return;
 
-      if (knownSessionId !== active.sessionId) {
+      const sessionChanged = knownSessionId !== active.sessionId;
+      if (sessionChanged) {
         knownSessionId = active.sessionId;
-        updateRuntimeState(opts.statePath, opts.runId, {
-          session_id: active.sessionId,
-          cwd: opts.launchCwd,
-        });
-        opts.onSessionIdDiscovered?.(active.sessionId);
       }
 
       const prompt = extractLastUserPrompt(active.path);
-      if (prompt && prompt.text !== lastPromptSeen) {
+      if (prompt) {
+        const patch: Parameters<typeof updateRuntimeState>[2] = {
+          session_id: active.sessionId,
+          cwd: opts.launchCwd,
+        };
+        if (prompt.text !== lastPromptSeen) {
+          patch.last_prompt = prompt.text;
+          patch.last_prompt_at = prompt.timestamp ?? new Date().toISOString();
+          patch.detector_armed = !prompt.text.trimStart().startsWith("/");
+        }
+        updateRuntimeState(opts.statePath, opts.runId, patch);
+        if (sessionChanged) {
+          opts.onSessionIdDiscovered?.(active.sessionId);
+        }
         lastPromptSeen = prompt.text;
-        const armed = !prompt.text.trimStart().startsWith("/");
-        updateRuntimeState(opts.statePath, opts.runId, {
-          last_prompt: prompt.text,
-          last_prompt_at: prompt.timestamp ?? new Date().toISOString(),
-          detector_armed: armed,
-        });
       }
     } catch {
       // swallow; next tick will retry

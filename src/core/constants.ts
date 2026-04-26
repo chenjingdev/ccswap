@@ -4,6 +4,7 @@ export const CCSWAP_KEYCHAIN_PREFIX = "ccswap-account";
 
 export const REPLAY_MODES = ["last_prompt", "continue", "custom_prompt"] as const;
 export type ReplayMode = (typeof REPLAY_MODES)[number];
+export const DEFAULT_CONTINUE_PROMPT = "Continue.";
 
 export function isReplayMode(value: string): value is ReplayMode {
   return (REPLAY_MODES as readonly string[]).includes(value);
