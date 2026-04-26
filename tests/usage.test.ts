@@ -92,6 +92,19 @@ describe("parseUsageCache", () => {
     expect(snap.five_hour_pct).toBe(42);
   });
 
+  it("falls back to lastGoodData when the API is unavailable", () => {
+    const path = join(tmp, "c.json");
+    writeCache(path, {
+      data: { planName: "Team", apiError: "http-401", apiUnavailable: true },
+      lastGoodData: { planName: "Team", fiveHour: 12, sevenDay: 34 },
+      timestamp: 1710000000000,
+    });
+    const snap = parseUsageCache(path);
+    expect(snap.plan_name).toBe("Team");
+    expect(snap.five_hour_pct).toBe(12);
+    expect(snap.seven_day_pct).toBe(34);
+  });
+
   it("returns empty snapshot for missing file", () => {
     const snap = loadUsageCache(join(tmp, "missing.json"));
     expect(snap.plan_name).toBeNull();
@@ -368,6 +381,31 @@ describe("refreshUsageCache (mocked fetch)", () => {
     const snap = loadUsageCache(cache);
     // Snapshot falls back to last good
     expect(snap.five_hour_pct).toBe(50);
+  });
+
+  it("does not reuse lastGoodData from a different credential after an API failure", async () => {
+    const cache = join(tmp, "c.json");
+    const lock = join(tmp, "c.json.lock");
+
+    globalThis.fetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          five_hour: { utilization: 50 },
+          seven_day: { utilization: 10 },
+        }),
+        { status: 200 },
+      ),
+    ) as unknown as typeof fetch;
+    await refreshUsageCache(cache, lock, "token-a", "max", { force: true, env: {} });
+
+    globalThis.fetch = vi.fn(async () => new Response("unauthorized", { status: 401 })) as unknown as typeof fetch;
+    await refreshUsageCache(cache, lock, "token-b", "max", { force: true, env: {} });
+
+    const raw = JSON.parse(readFileSync(cache, "utf-8")) as { lastGoodData?: unknown };
+    expect(raw.lastGoodData).toBeUndefined();
+    const snap = loadUsageCache(cache, { accessToken: "token-b", subscriptionType: "max" });
+    expect(snap.plan_name).toBe("Max");
+    expect(snap.five_hour_pct).toBeNull();
   });
 
   it("skips API when ANTHROPIC_BASE_URL points to a proxy", async () => {

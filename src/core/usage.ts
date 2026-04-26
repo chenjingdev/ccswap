@@ -185,7 +185,7 @@ export function parseUsageCache(path: string, identity: UsageCacheIdentity = {})
   const data = raw.data ?? null;
   const lastGood = raw.lastGoodData ?? null;
   let payload: UsageData | null;
-  if (data && data.apiError === "rate-limited" && lastGood) {
+  if (data && data.apiUnavailable && lastGood) {
     payload = lastGood;
   } else if (!data && lastGood) {
     payload = lastGood;
@@ -239,9 +239,10 @@ export function readUsageCacheState(
   return { snapshot, fresh: nowMs - timestamp < ttlMs };
 }
 
-function readLastGood(cachePath: string): UsageData | null {
+function readLastGood(cachePath: string, identity: UsageCacheIdentity = {}): UsageData | null {
   const raw = readCacheFile(cachePath);
   if (!raw) return null;
+  if (!cacheMatchesIdentity(raw, identity)) return null;
   return raw.lastGoodData ?? null;
 }
 
@@ -515,7 +516,7 @@ export async function refreshUsageCache(
         apiError: apiResult.error ?? "unknown",
         source: "oauth",
       };
-      const lastGood = readLastGood(cachePath);
+      const lastGood = readLastGood(cachePath, identity);
       const payload: UsageCacheFile = {
         data: failureResult,
         timestamp: now,
