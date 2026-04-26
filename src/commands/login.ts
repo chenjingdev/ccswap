@@ -15,11 +15,11 @@ import { buildClaudeEnv } from "../core/env.js";
 import { loadState, saveState } from "../core/state.js";
 import { runInteractive } from "../claude/pty-interactive.js";
 
-function setInitialActiveAccount(accountName: string): void {
+function setInitialDefaultAccount(accountName: string): void {
   const state = loadState();
-  if (state.active_account || state.last_account) return;
-  state.active_account = accountName;
-  state.last_account = accountName;
+  if (state.default_account || state.last_default_account) return;
+  state.default_account = accountName;
+  state.last_default_account = accountName;
   saveState(state);
 }
 
@@ -57,7 +57,7 @@ export async function runLogin(name: string): Promise<number> {
   }
   clearAccountAuthError(account);
   saveConfig(config);
-  setInitialActiveAccount(account.name);
+  setInitialDefaultAccount(account.name);
   console.log(`saved login for "${account.name}"`);
   return 0;
 }
@@ -101,7 +101,7 @@ export async function runLoginNewAccount(): Promise<{ exitCode: number; accountN
   }
   clearAccountAuthError(account);
   saveConfig(config);
-  setInitialActiveAccount(account.name);
+  setInitialDefaultAccount(account.name);
   console.log(`saved login as "${name}"`);
   return { exitCode: 0, accountName: name };
 }

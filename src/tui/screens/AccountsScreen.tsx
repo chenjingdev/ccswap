@@ -18,6 +18,7 @@ interface Props {
   accounts: AccountView[];
   state: AppStateData;
   selectedIndex: number;
+  thresholdPct: number | null;
   width: number;
 }
 
@@ -29,17 +30,17 @@ interface Column {
 function layoutColumns(totalWidth: number): Column[] {
   const inner = Math.max(40, totalWidth - 3);
   const colMark = 1;   // ▌ selection bar
-  const colActive = 2; // ★ / ·
+  const colDefault = 8;
   const colPlan = 8;
   const colUpdated = 12;
   const gap = 6;
-  const fixedWithoutAccount = colMark + colActive + colPlan + colUpdated + gap;
+  const fixedWithoutAccount = colMark + colDefault + colPlan + colUpdated + gap;
   const colAccount = Math.max(18, Math.min(34, Math.floor(inner * 0.3)));
   const remaining = inner - fixedWithoutAccount - colAccount;
   const colUsage = Math.max(14, Math.floor(remaining / 2));
   return [
     { label: "", width: colMark },
-    { label: "", width: colActive },
+    { label: "Default", width: colDefault },
     { label: "Account", width: colAccount },
     { label: "Plan", width: colPlan },
     { label: "Usage(5h)", width: colUsage },
@@ -52,7 +53,7 @@ function usageBarWidth(columnWidth: number): number {
   return Math.max(4, columnWidth - 5);
 }
 
-export function AccountsScreen({ accounts, state, selectedIndex, width }: Props) {
+export function AccountsScreen({ accounts, state, selectedIndex, thresholdPct, width }: Props) {
   const columns = layoutColumns(width);
   const selected = accounts[selectedIndex];
   const ruleWidth = Math.max(10, width - 2);
@@ -81,13 +82,13 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
       ) : (
         accounts.map((view, idx) => {
           const isSelected = idx === selectedIndex;
-          const isActive = state.active_account === view.account.name;
+          const isDefault = state.default_account === view.account.name;
           const autoSwap = view.account.auto_swap;
           const nameColor = !view.loggedIn || view.needsRelogin ? "red" : autoSwap ? "green" : "gray";
           const suffix = !autoSwap ? " (off)" : "";
           const markerBg = isSelected ? "magenta" : undefined;
-          const activeIcon = isActive ? "★" : "·";
-          const activeColor = isActive ? "yellow" : "gray";
+          const defaultLabel = isDefault ? "★ yes" : "·";
+          const defaultColor = isDefault ? "yellow" : "gray";
 
           return (
             <Box
@@ -98,7 +99,7 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
                 <Text backgroundColor={markerBg}> </Text>
               </Box>
               <Box width={columns[1]!.width} marginRight={1}>
-                <Text color={activeColor} bold={isActive}>{activeIcon}</Text>
+                <Text color={defaultColor} bold={isDefault}>{fitText(defaultLabel, columns[1]!.width)}</Text>
               </Box>
               <Box width={columns[2]!.width} marginRight={1}>
                 <Text color={nameColor} bold={isSelected} dimColor={!autoSwap}>
@@ -159,13 +160,14 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
         const sevenRel = formatRelativeFromNow(selected.usage.seven_day_reset_at);
         const cachedClock = formatUpdatedAt(selected.usage.cache_timestamp_ms);
         const cachedAgo = formatAgo(selected.usage.cache_timestamp_ms);
+        const thresholdLabel = thresholdPct === null ? "disabled" : `${thresholdPct}%`;
         return (
           <Box marginTop={1} flexDirection="column">
             <Text>
               <Text color="gray" bold>Status      </Text>
               <Text color="gray">
                 {[
-                  state.active_account === selected.account.name ? "Active" : "Inactive",
+                  state.default_account === selected.account.name ? "Default" : "Not default",
                   selected.account.auto_swap ? "auto-swap on" : "auto-swap off",
                   `plan ${selected.subscriptionType ?? "-"}`,
                   selected.needsRelogin ? "re-login required" : selected.loggedIn ? "logged in" : "no login",
@@ -185,6 +187,10 @@ export function AccountsScreen({ accounts, state, selectedIndex, width }: Props)
             <Text>
               <Text color="gray" bold>Swap queue  </Text>
               <Text color="gray">{swapStatus}</Text>
+            </Text>
+            <Text>
+              <Text color="gray" bold>Threshold   </Text>
+              <Text color="gray">{thresholdLabel}</Text>
             </Text>
             <Text>
               <Text color="gray" bold>Credential  </Text>

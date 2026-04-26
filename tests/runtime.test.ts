@@ -36,6 +36,8 @@ describe("runtime state", () => {
     expect(state.swap_pending).toBe(false);
     expect(state.swap_reason).toBeNull();
     expect(state.swap_requested_at).toBeNull();
+    expect(state.swap_wait_until).toBeNull();
+    expect(state.swap_wait_reason).toBeNull();
     expect(state.requested_account).toBeNull();
     expect(state.requested_reason).toBeNull();
     expect(state.requested_at).toBeNull();
@@ -55,6 +57,8 @@ describe("runtime state", () => {
       swap_pending: true,
       swap_reason: "proactive_usage",
       swap_requested_at: requestedAt,
+      swap_wait_until: "2026-04-25T00:05:00.000Z",
+      swap_wait_reason: "usage_reset",
       last_activity_at: requestedAt,
       safe_to_restart: false,
     });
@@ -63,6 +67,8 @@ describe("runtime state", () => {
     expect(pending.swap_pending).toBe(true);
     expect(pending.swap_reason).toBe("proactive_usage");
     expect(pending.swap_requested_at).toBe(requestedAt);
+    expect(pending.swap_wait_until).toBe("2026-04-25T00:05:00.000Z");
+    expect(pending.swap_wait_reason).toBe("usage_reset");
     expect(pending.safe_to_restart).toBe(false);
 
     updateRuntimeState(path, "run-pending", {
@@ -70,6 +76,8 @@ describe("runtime state", () => {
       swap_pending: false,
       swap_reason: null,
       swap_requested_at: null,
+      swap_wait_until: null,
+      swap_wait_reason: null,
       last_activity_at: null,
       safe_to_restart: false,
     });
@@ -79,6 +87,8 @@ describe("runtime state", () => {
     expect(cleared.swap_pending).toBe(false);
     expect(cleared.swap_reason).toBeNull();
     expect(cleared.swap_requested_at).toBeNull();
+    expect(cleared.swap_wait_until).toBeNull();
+    expect(cleared.swap_wait_reason).toBeNull();
     expect(cleared.last_activity_at).toBeNull();
     expect(cleared.safe_to_restart).toBe(false);
   });

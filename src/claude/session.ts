@@ -12,7 +12,12 @@ import {
 } from "../core/statusline.js";
 import { getAccountCredential } from "../core/credentials.js";
 import { buildClaudeLaunchAuth } from "../core/env.js";
-import { isAccountUsageAtOrAbove, isAccountUsageExhausted } from "../core/usage.js";
+import {
+  getAccountUsageThresholdStatus,
+  isAccountUsageAtOrAbove,
+  isAccountUsageExhausted,
+  refreshAccountUsage,
+} from "../core/usage.js";
 import {
   cleanupStaleRuntimeSessions,
   loadRuntimeState,
@@ -25,9 +30,12 @@ import { buildResumeArgs, resolveSessionDirective, splitPromptFromArgs } from ".
 import { runClaude, type RunnerResult } from "./runner.js";
 import { startSessionWatcher, type SessionWatcherHandle } from "./session-watcher.js";
 
+const USAGE_RESET_RECHECK_BUFFER_MS = 1000;
+const USAGE_RESET_UNKNOWN_RECHECK_MS = 5 * 60_000;
+
 function pickLaunchAccount(accounts: AccountData[], state: AppStateData): string | null {
   if (accounts.length === 0) return null;
-  const pivot = state.active_account ?? state.last_account;
+  const pivot = state.default_account ?? state.last_default_account;
   if (pivot) {
     const hit = accounts.find((a) => a.name === pivot);
     if (hit) return hit.name;
@@ -92,6 +100,14 @@ function configuredAccounts(fallback: AccountData[]): AccountData[] {
   }
 }
 
+function configuredProactiveThreshold(fallback: number | null): number | null {
+  try {
+    return existsSync(CONFIG_PATH) ? loadConfig().proactive_swap_threshold_pct : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function eligibleAccounts(fallback: AccountData[]): AccountData[] {
   return configuredAccounts(fallback).filter((a) => getAccountCredential(a) !== null && !accountNeedsRelogin(a));
 }
@@ -113,6 +129,86 @@ function writeNoEligibleAccountsMessage(fallback: AccountData[]): void {
     return;
   }
   process.stderr.write("[ccswap] No accounts with saved logins configured.\n");
+}
+
+function timestampMs(iso: string | null): number {
+  if (!iso) return 0;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function proactiveWaitIsActive(runtime: SessionRuntimeState, nowMs = Date.now()): boolean {
+  if (runtime.swap_wait_reason !== "usage_reset") return false;
+  const waitUntil = timestampMs(runtime.swap_wait_until);
+  return waitUntil > nowMs;
+}
+
+function usageResetRecheckAt(accounts: AccountData[], threshold: number, nowMs = Date.now()): string {
+  let resetMs: number | null = null;
+  for (const account of accounts) {
+    const status = getAccountUsageThresholdStatus(account, threshold);
+    if (!status.atOrAbove || status.fiveHourResetMs === null) continue;
+    resetMs = resetMs === null ? status.fiveHourResetMs : Math.min(resetMs, status.fiveHourResetMs);
+  }
+  const nextMs = resetMs === null
+    ? nowMs + USAGE_RESET_UNKNOWN_RECHECK_MS
+    : Math.max(nowMs + USAGE_RESET_RECHECK_BUFFER_MS, resetMs + USAGE_RESET_RECHECK_BUFFER_MS);
+  return new Date(nextMs).toISOString();
+}
+
+function setUsageResetWait(statePath: string, runId: string, until: string): void {
+  const latest = loadRuntimeState(statePath, runId);
+  if (latest.swap_wait_reason === "usage_reset" && latest.swap_wait_until === until) return;
+  updateRuntimeState(statePath, runId, {
+    swap_pending: false,
+    swap_reason: null,
+    swap_requested_at: null,
+    swap_wait_until: until,
+    swap_wait_reason: "usage_reset",
+    last_activity_at: new Date().toISOString(),
+    safe_to_restart: false,
+  });
+}
+
+function clearUsageResetWait(statePath: string, runId: string): void {
+  const latest = loadRuntimeState(statePath, runId);
+  if (latest.swap_wait_until === null && latest.swap_wait_reason === null) return;
+  updateRuntimeState(statePath, runId, {
+    swap_wait_until: null,
+    swap_wait_reason: null,
+  });
+}
+
+async function refreshUsageForAccounts(accounts: AccountData[]): Promise<void> {
+  await Promise.all(accounts.map(async (account) => {
+    try {
+      await refreshAccountUsage(account, true);
+    } catch {
+      // Usage refresh should not interrupt the running Claude session.
+    }
+  }));
+}
+
+function runtimeTurnIsComplete(runtime: SessionRuntimeState): boolean {
+  const promptAt = timestampMs(runtime.last_prompt_at);
+  if (promptAt <= 0) return true;
+  return timestampMs(runtime.last_assistant_stop_at ?? null) >= promptAt;
+}
+
+function runtimeTurnWasIncompleteAt(runtime: SessionRuntimeState, markerIso: string | null): boolean {
+  const markerAt = timestampMs(markerIso);
+  const promptAt = timestampMs(runtime.last_prompt_at);
+  if (markerAt <= 0 || promptAt <= 0 || markerAt < promptAt) return false;
+  const stopAt = timestampMs(runtime.last_assistant_stop_at ?? null);
+  return stopAt <= 0 || markerAt < stopAt;
+}
+
+function requestedSwitchNeedsReplayPrompt(runtime: SessionRuntimeState): boolean {
+  return runtimeTurnWasIncompleteAt(runtime, runtime.requested_at);
+}
+
+function runtimeHasConversation(runtime: SessionRuntimeState): boolean {
+  return Boolean(runtime.session_id && runtime.last_prompt_at);
 }
 
 interface PreparedLaunchArgs {
@@ -177,6 +273,16 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
     process.stderr.write("[ccswap] No eligible account is available.\n");
     return 1;
   }
+  const launchThreshold = configuredProactiveThreshold(config.proactive_swap_threshold_pct);
+  const launchAccount = eligible.find((a) => a.name === currentName);
+  if (
+    launchAccount &&
+    launchThreshold !== null &&
+    await isAccountUsageAtOrAbove(launchAccount, launchThreshold, false)
+  ) {
+    currentName = await pickNextReadyAccount(eligible, currentName, new Set([currentName]), launchThreshold)
+      ?? currentName;
+  }
 
   const runId = randomUUID();
   const statePath = runtimeStatePath(runId);
@@ -188,6 +294,7 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
     session_id: null,
     last_prompt: null,
     last_prompt_at: null,
+    last_assistant_stop_at: null,
     detector_armed: false,
     cwd: opts.launchCwd,
     active_account: currentName,
@@ -199,6 +306,8 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
     swap_pending: false,
     swap_reason: null,
     swap_requested_at: null,
+    swap_wait_until: null,
+    swap_wait_reason: null,
     requested_account: null,
     requested_reason: null,
     requested_at: null,
@@ -240,6 +349,7 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
 
       const { prompt: launchPrompt } = splitPromptFromArgs(launchArgs);
       const detectorArmed = Boolean(launchPrompt && !launchPrompt.trimStart().startsWith("/"));
+      const launchedTurnAt = detectorArmed ? new Date().toISOString() : null;
 
       updateRuntimeState(statePath, runId, {
         cwd: opts.launchCwd,
@@ -247,9 +357,14 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
         session_id: runtimeSessionId,
         ccswap_pid: process.pid,
         detector_armed: detectorArmed,
+        last_prompt: detectorArmed ? launchPrompt : null,
+        last_prompt_at: launchedTurnAt,
+        last_assistant_stop_at: null,
         swap_pending: false,
         swap_reason: null,
         swap_requested_at: null,
+        swap_wait_until: null,
+        swap_wait_reason: null,
         last_activity_at: null,
         safe_to_restart: false,
       });
@@ -297,15 +412,50 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
           if (!latest.requested_account) return false;
           return getRequestedAccount(latest, eligibleAccounts(config.accounts), account.name) !== null;
         },
-        shouldProactivelySwap: config.proactive_swap_threshold_pct === null
-          ? undefined
-          : () => isAccountUsageAtOrAbove(account, config.proactive_swap_threshold_pct ?? 95, false),
+        shouldProactivelySwap: async () => {
+          const latest = loadRuntimeState(statePath, runId);
+          if (!runtimeHasConversation(latest)) return false;
+          const threshold = configuredProactiveThreshold(config.proactive_swap_threshold_pct);
+          if (threshold === null) {
+            clearUsageResetWait(statePath, runId);
+            return false;
+          }
+
+          const latestEligible = eligibleAccounts(config.accounts);
+          const waitingForReset = latest.swap_wait_reason === "usage_reset";
+          const waitStillActive = proactiveWaitIsActive(latest);
+          if (waitingForReset && !waitStillActive) {
+            await refreshUsageForAccounts(latestEligible);
+          }
+
+          const currentReachedThreshold = await isAccountUsageAtOrAbove(account, threshold, false);
+          if (!currentReachedThreshold) {
+            clearUsageResetWait(statePath, runId);
+            return false;
+          }
+
+          const nextReady = await pickNextReadyAccount(latestEligible, account.name, new Set([account.name]), threshold);
+          if (nextReady) {
+            clearUsageResetWait(statePath, runId);
+            return true;
+          }
+          if (waitStillActive) return false;
+
+          const waitAccounts = latestEligible.length > 0 ? latestEligible : [account];
+          setUsageResetWait(statePath, runId, usageResetRecheckAt(waitAccounts, threshold));
+          return false;
+        },
+        canExitPendingSwap: () => runtimeTurnIsComplete(loadRuntimeState(statePath, runId)),
+        shouldReplayProactiveSwap: () => !runtimeTurnIsComplete(loadRuntimeState(statePath, runId)),
+        shouldReplayRequestedAccountSwap: () => requestedSwitchNeedsReplayPrompt(loadRuntimeState(statePath, runId)),
         onProactiveSwapPending: () => {
           const now = new Date().toISOString();
           updateRuntimeState(statePath, runId, {
             swap_pending: true,
             swap_reason: "proactive_usage",
             swap_requested_at: now,
+            swap_wait_until: null,
+            swap_wait_reason: null,
             last_activity_at: now,
             safe_to_restart: false,
           });
@@ -318,6 +468,11 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
         },
         onRequestedAccountPending: () => {
           updateRuntimeState(statePath, runId, {
+            swap_pending: false,
+            swap_reason: null,
+            swap_requested_at: null,
+            swap_wait_until: null,
+            swap_wait_reason: null,
             last_activity_at: new Date().toISOString(),
             safe_to_restart: false,
           });
@@ -357,9 +512,10 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
       let nextName: string | null = null;
       const latest = loadRuntimeState(statePath, runId);
       eligible = eligibleAccounts(config.accounts);
+      const requestedNextName = getRequestedAccount(latest, eligible, endedAccountName);
 
       if (result.requestedAccountSwap) {
-        nextName = getRequestedAccount(latest, eligible, endedAccountName);
+        nextName = requestedNextName;
         if (!nextName) {
           updateRuntimeState(statePath, runId, {
             requested_account: null,
@@ -369,13 +525,15 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
           });
           return result.exitCode;
         }
+      } else if (requestedNextName) {
+        nextName = requestedNextName;
       } else {
         attempted.add(endedAccountName);
         nextName = await pickNextReadyAccount(
           eligible,
           endedAccountName,
           attempted,
-          config.proactive_swap_threshold_pct,
+          configuredProactiveThreshold(config.proactive_swap_threshold_pct),
         );
       }
 
@@ -388,12 +546,15 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
       const includeReplayPrompt =
         result.limitHit ||
         (result.proactiveSwap && result.proactiveSwapNeedsPrompt) ||
-        (result.requestedAccountSwap && result.requestedAccountSwapNeedsPrompt);
+        (result.requestedAccountSwap && result.requestedAccountSwapNeedsPrompt) ||
+        (!result.requestedAccountSwap && requestedNextName !== null && requestedSwitchNeedsReplayPrompt(latest));
+      const resumeRuntime =
+        result.proactiveSwap && requestedNextName === null
+          ? { ...latest, replay_mode: "continue", last_prompt: null, custom_prompt: null }
+          : latest;
       launchArgs = buildResumeArgs(
         opts.originalArgs,
-        result.proactiveSwap
-          ? { ...latest, replay_mode: "continue", last_prompt: null, custom_prompt: null }
-          : latest,
+        resumeRuntime,
         false,
         includeReplayPrompt,
       );
@@ -407,6 +568,8 @@ export async function runClaudeSession(opts: SessionOptions): Promise<number> {
         requested_account: null,
         requested_reason: null,
         requested_at: null,
+        swap_wait_until: null,
+        swap_wait_reason: null,
         safe_to_restart: false,
       });
       process.stderr.write(`[ccswap] Switching this session to '${nextName}'\n`);

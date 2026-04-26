@@ -228,6 +228,78 @@ describe("parseUsageCache", () => {
 
 });
 
+describe("usage threshold", () => {
+  let tmp: string;
+  let oldConfigDir: string | undefined;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "ccswap-usage-threshold-"));
+    oldConfigDir = process.env.CCSWAP_CONFIG_DIR;
+    process.env.CCSWAP_CONFIG_DIR = tmp;
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+    if (oldConfigDir === undefined) {
+      delete process.env.CCSWAP_CONFIG_DIR;
+    } else {
+      process.env.CCSWAP_CONFIG_DIR = oldConfigDir;
+    }
+    vi.resetModules();
+  });
+
+  it("uses only the five-hour bucket for proactive thresholds", async () => {
+    const {
+      accountUsageCachePath,
+      captureStatusLineUsage,
+      getAccountUsageThresholdStatus,
+      isAccountUsageAtOrAbove,
+    } = await import("../src/core/usage.js");
+    const account = {
+      name: "work",
+      auth_source: "credential" as const,
+      auto_swap: true,
+      keychain_service: "svc",
+      keychain_account: "acct",
+      email: null,
+    };
+    const cachePath = accountUsageCachePath(account);
+
+    captureStatusLineUsage(
+      cachePath,
+      "Max",
+      {
+        rate_limits: {
+          five_hour: { used_percentage: 3, resets_at: 32503680000 },
+          seven_day: { used_percentage: 99, resets_at: 32503766400 },
+        },
+      },
+      Date.now(),
+    );
+    expect(await isAccountUsageAtOrAbove(account, 4, false)).toBe(false);
+
+    captureStatusLineUsage(
+      cachePath,
+      "Max",
+      {
+        rate_limits: {
+          five_hour: { used_percentage: 4, resets_at: 32503680000 },
+          seven_day: { used_percentage: 0, resets_at: 32503766400 },
+        },
+      },
+      Date.now(),
+    );
+    expect(await isAccountUsageAtOrAbove(account, 4, false)).toBe(true);
+    expect(getAccountUsageThresholdStatus(account, 4)).toMatchObject({
+      atOrAbove: true,
+      fiveHourPct: 4,
+      fiveHourResetAt: "3000-01-01T00:00:00.000Z",
+      fiveHourResetMs: 32503680000000,
+    });
+  });
+});
+
 describe("refreshUsageCache (mocked fetch)", () => {
   let tmp: string;
   let originalFetch: typeof fetch;

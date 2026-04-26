@@ -59,7 +59,7 @@ function build(): Command {
 
   program
     .command("use <name>")
-    .description("switch active account")
+    .description("set the default account for new Claude sessions")
     .action((name: string) => process.exit(runUse(name)));
 
   program
@@ -100,7 +100,7 @@ function build(): Command {
   program
     .command("run")
     .description("run claude with auto-swap on limit")
-    .option("--account <name>", "force this account as the initial active one")
+    .option("--account <name>", "set this account as the launch default before running")
     .passThroughOptions()
     .allowUnknownOption()
     .argument("[claude-args...]", "arguments forwarded to claude")

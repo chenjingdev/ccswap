@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 
 import { accountNeedsRelogin, removeAccount as removeAccountCore } from "../core/accounts.js";
-import { promoteActiveAfterAccountRemoval } from "../core/active-account.js";
+import { promoteDefaultAfterAccountRemoval } from "../core/default-account.js";
 import type { AccountData, AppConfigData } from "../core/config.js";
 import { loadConfig, saveConfig } from "../core/config.js";
 import { getAccountCredential, parseStoredCredential } from "../core/credentials.js";
@@ -22,7 +22,7 @@ export interface ConfigStateApi {
   accounts: AccountView[];
   reload(): void;
   removeAccount(name: string): string | null;
-  setActive(name: string): string | null;
+  setDefault(name: string): string | null;
   toggleAutoSwap(name: string): void;
 }
 
@@ -61,7 +61,7 @@ export function useConfigState(): ConfigStateApi {
     try {
       const current = loadConfig();
       removeAccountCore(current, name);
-      const st = promoteActiveAfterAccountRemoval(current, loadState(), name);
+      const st = promoteDefaultAfterAccountRemoval(current, loadState(), name);
       saveState(st);
       setConfig(current);
       setAccounts(buildViews(current));
@@ -72,13 +72,13 @@ export function useConfigState(): ConfigStateApi {
     }
   }, [buildViews]);
 
-  const setActive = useCallback((name: string): string | null => {
+  const setDefault = useCallback((name: string): string | null => {
     const current = loadConfig();
     const account = current.accounts.find((a) => a.name === name);
     if (!account) return `account "${name}" not found`;
     const st = loadState();
-    st.last_account = st.active_account;
-    st.active_account = account.name;
+    st.last_default_account = st.default_account;
+    st.default_account = account.name;
     saveState(st);
     setState(st);
     return null;
@@ -100,7 +100,7 @@ export function useConfigState(): ConfigStateApi {
     accounts,
     reload,
     removeAccount,
-    setActive,
+    setDefault,
     toggleAutoSwap,
   };
 }

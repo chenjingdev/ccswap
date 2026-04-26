@@ -37,7 +37,7 @@ ccswap account add <name>    # add an empty account row
 ccswap account list
 ccswap account remove <name>
 ccswap login <name>          # re-run `claude auth login` for an existing account
-ccswap use <name>            # set active account (name is the OAuth email for new accounts)
+ccswap use <name>            # set the default account for new sessions
 ccswap token-probe <name>    # experimental: try per-process OAuth token auth
 ccswap connect               # manually connect/repair plain `claude`
 ccswap status                # show dashboard + plain `claude` connection status
@@ -50,12 +50,13 @@ ccswap claude <claude-args>  # shorthand for the above
 
 ### Accounts screen
 - `j` / `k` / arrows — move selection
-- `Enter` — set active account
+- `Enter` — set the default account for new sessions
 - `a` — add account: launches `claude auth login`, captures the OAuth
   credential, and registers the account under the login's email address
   (`chenjing@gmail.com`). Collisions get a numeric suffix. Dashboard returns
   automatically when the login flow ends (success or cancel).
 - `e` — edit selected account (toggle auto-swap / delete)
+- `t` — set the proactive auto-swap threshold (`5h` usage only)
 - `l` — re-run `claude auth login` for the selected account (use when the
   saved token has expired). Email is refreshed from `~/.claude.json` on
   every successful login.
@@ -123,12 +124,21 @@ When a limit is confirmed:
    mode) the last prompt appended, so the conversation continues.
 
 By default, ccswap also watches Claude Code's statusline usage snapshot and
-switches accounts before the hard limit once either the five-hour or seven-day
-bucket reaches 95%. This proactive swap is now pending-first: ccswap records
+switches accounts before the hard limit once the five-hour bucket reaches 95%.
+This proactive swap is now pending-first: ccswap records
 the pending swap, waits for a short quiet terminal-activity window, then
 relaunches Claude with `--resume <session-id>` and a short `Continue.` prompt
 instead of replaying the last prompt. Set `proactive_swap_threshold_pct` to
-another percentage, or `null` to disable it.
+another percentage, or `null` to disable it. Threshold changes made from the
+dashboard are picked up by running ccswap sessions. If a selected live session
+already has an automatic proactive swap pending and you press `s`, the manual
+session switch takes priority and clears the proactive pending marker. If all
+eligible accounts are already at or above the threshold, ccswap leaves the
+current Claude session running and records a reset wait instead of exiting.
+It schedules the next check for the earliest known five-hour reset time plus a
+small buffer, refreshes usage once at that time, and only swaps if another
+account is actually below the threshold. With a single account, this means the
+session simply stays alive until that account's five-hour window resets.
 
 `auth_mode` defaults to `keychain_copy`, which keeps the stable credential-copy
 activation behavior. Set it to `oauth_env` only for experiments: ccswap will
@@ -191,7 +201,7 @@ layer.
 ## Paths
 
 - `~/.config/ccswap/config.json` — accounts + settings
-- `~/.config/ccswap/state.json` — active / last account
+- `~/.config/ccswap/state.json` — default / last default account
 - `~/.config/ccswap/runtime/` — internal per-run restart state + hook settings
 - `~/.config/ccswap/usage-cache/` — per-account usage snapshots
 

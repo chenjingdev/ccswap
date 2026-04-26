@@ -1,5 +1,5 @@
 import { addAccount, getAccountStatus, removeAccount } from "../core/accounts.js";
-import { promoteActiveAfterAccountRemoval } from "../core/active-account.js";
+import { promoteDefaultAfterAccountRemoval } from "../core/default-account.js";
 import { loadConfig } from "../core/config.js";
 import { loadState, saveState } from "../core/state.js";
 
@@ -23,7 +23,7 @@ export function runAccountList(): number {
     return 0;
   }
   for (const account of config.accounts) {
-    const marker = state.active_account === account.name ? "*" : " ";
+    const marker = state.default_account === account.name ? "*" : " ";
     const status = getAccountStatus(account);
     const login = status.logged_in ? "logged in" : "no login";
     const swap = account.auto_swap ? "auto-swap" : "manual";
@@ -37,7 +37,7 @@ export function runAccountRemove(name: string): number {
   const state = loadState();
   try {
     removeAccount(config, name);
-    saveState(promoteActiveAfterAccountRemoval(config, state, name));
+    saveState(promoteDefaultAfterAccountRemoval(config, state, name));
     console.log(`removed account "${name}"`);
     return 0;
   } catch (err) {

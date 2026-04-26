@@ -20,6 +20,8 @@ export function SessionsScreen({ config, sessions, selectedIndex, width }: Props
   const customPrompt = (selectedSession ? selectedSession.custom_prompt : config.custom_prompt) || "-";
   const accountSwitch = selectedSession?.requested_account
     ? `pending -> ${selectedSession.requested_account}`
+    : selectedSession?.swap_wait_until
+      ? `waiting reset -> ${formatIsoLocal(selectedSession.swap_wait_until)}`
     : selectedSession
       ? "none"
       : "-";
@@ -83,6 +85,8 @@ function SessionRow({
     ? "re-login required"
     : session.swap_pending
     ? "swap pending"
+    : session.swap_wait_until
+    ? "waiting reset"
     : session.safe_to_restart
       ? "restart ready"
       : session.claude_pid

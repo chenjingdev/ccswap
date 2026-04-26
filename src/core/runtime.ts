@@ -9,6 +9,7 @@ export interface SessionRuntimeState {
   session_id: string | null;
   last_prompt: string | null;
   last_prompt_at: string | null;
+  last_assistant_stop_at: string | null;
   detector_armed: boolean;
   cwd: string | null;
   active_account: string | null;
@@ -20,6 +21,8 @@ export interface SessionRuntimeState {
   swap_pending: boolean;
   swap_reason: "proactive_usage" | "hard_limit" | null;
   swap_requested_at: string | null;
+  swap_wait_until: string | null;
+  swap_wait_reason: "usage_reset" | null;
   requested_account: string | null;
   requested_reason: "manual_session_switch" | null;
   requested_at: string | null;
@@ -42,6 +45,7 @@ function defaultState(runId: string): SessionRuntimeState {
     session_id: null,
     last_prompt: null,
     last_prompt_at: null,
+    last_assistant_stop_at: null,
     detector_armed: false,
     cwd: null,
     active_account: null,
@@ -53,6 +57,8 @@ function defaultState(runId: string): SessionRuntimeState {
     swap_pending: false,
     swap_reason: null,
     swap_requested_at: null,
+    swap_wait_until: null,
+    swap_wait_reason: null,
     requested_account: null,
     requested_reason: null,
     requested_at: null,
@@ -74,6 +80,11 @@ function normalizeRequestedReason(value: unknown): SessionRuntimeState["requeste
   return null;
 }
 
+function normalizeSwapWaitReason(value: unknown): SessionRuntimeState["swap_wait_reason"] {
+  if (value === "usage_reset") return value;
+  return null;
+}
+
 export function loadRuntimeState(path: string, runId: string): SessionRuntimeState {
   const raw = readJson<RuntimeStateFile>(path, {});
   const fallback = defaultState(runId);
@@ -82,6 +93,7 @@ export function loadRuntimeState(path: string, runId: string): SessionRuntimeSta
     session_id: raw.session_id ? String(raw.session_id) : null,
     last_prompt: raw.last_prompt ? String(raw.last_prompt) : null,
     last_prompt_at: raw.last_prompt_at ? String(raw.last_prompt_at) : null,
+    last_assistant_stop_at: raw.last_assistant_stop_at ? String(raw.last_assistant_stop_at) : null,
     detector_armed: Boolean(raw.detector_armed ?? false),
     cwd: raw.cwd ? String(raw.cwd) : null,
     active_account: raw.active_account ? String(raw.active_account) : null,
@@ -93,6 +105,8 @@ export function loadRuntimeState(path: string, runId: string): SessionRuntimeSta
     swap_pending: Boolean(raw.swap_pending ?? fallback.swap_pending),
     swap_reason: normalizeSwapReason(raw.swap_reason),
     swap_requested_at: raw.swap_requested_at ? String(raw.swap_requested_at) : null,
+    swap_wait_until: raw.swap_wait_until ? String(raw.swap_wait_until) : null,
+    swap_wait_reason: normalizeSwapWaitReason(raw.swap_wait_reason),
     requested_account: raw.requested_account ? String(raw.requested_account) : null,
     requested_reason: normalizeRequestedReason(raw.requested_reason),
     requested_at: raw.requested_at ? String(raw.requested_at) : null,

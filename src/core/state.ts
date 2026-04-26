@@ -2,11 +2,13 @@ import { readJson, writeJson } from "./fs-util.js";
 import { STATE_PATH } from "./paths.js";
 
 export interface AppStateData {
-  active_account: string | null;
-  last_account: string | null;
+  default_account: string | null;
+  last_default_account: string | null;
 }
 
 interface StateFile {
+  default_account?: string | null;
+  last_default_account?: string | null;
   active_account?: string | null;
   last_account?: string | null;
 }
@@ -14,8 +16,8 @@ interface StateFile {
 export function loadState(): AppStateData {
   const raw = readJson<StateFile>(STATE_PATH, {});
   return {
-    active_account: raw.active_account ?? null,
-    last_account: raw.last_account ?? null,
+    default_account: raw.default_account ?? raw.active_account ?? null,
+    last_default_account: raw.last_default_account ?? raw.last_account ?? null,
   };
 }
 

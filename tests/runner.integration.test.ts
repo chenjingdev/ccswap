@@ -178,13 +178,45 @@ describe("runClaude integration", () => {
 
     expect(result.limitHit).toBe(false);
     expect(result.proactiveSwap).toBe(true);
-    expect(result.proactiveSwapNeedsPrompt).toBe(true);
+    expect(result.proactiveSwapNeedsPrompt).toBe(false);
     expect(pending).toBe(1);
     expect(boundary).toBe(1);
     expect(elapsed).toBeGreaterThanOrEqual(3000);
     expect(elapsed).toBeLessThan(8000);
     rmSync(tmp, { recursive: true, force: true });
   }, 12000);
+
+  it("keeps a quiet pending proactive swap alive until the caller says the turn is complete", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ccswap-runner-"));
+    const script = `console.log("thinking silently"); setTimeout(() => {}, 20000);`;
+    let safe = false;
+
+    setTimeout(() => {
+      safe = true;
+    }, 3000);
+
+    const start = Date.now();
+    const result = await runClaude({
+      claudeBin: NODE_BIN,
+      args: nodeArgs(script),
+      cwd: tmp,
+      env: { ...process.env },
+      accountName: "fake",
+      shouldArmLimit: () => true,
+      shouldConfirmLimit: () => true,
+      shouldProactivelySwap: () => true,
+      canExitPendingSwap: () => safe,
+      shouldReplayProactiveSwap: () => !safe,
+      proactiveQuietMs: 200,
+    });
+    const elapsed = Date.now() - start;
+
+    expect(result.limitHit).toBe(false);
+    expect(result.proactiveSwap).toBe(true);
+    expect(result.proactiveSwapNeedsPrompt).toBe(true);
+    expect(elapsed).toBeGreaterThanOrEqual(3000);
+    rmSync(tmp, { recursive: true, force: true });
+  }, 10000);
 
   it("forces proactive exit after max wait when output never goes quiet", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "ccswap-runner-"));
@@ -254,6 +286,47 @@ describe("runClaude integration", () => {
     expect(result.proactiveSwap).toBe(false);
     expect(result.exitCode).toBe(0);
     expect(elapsed).toBeGreaterThanOrEqual(2500);
+    rmSync(tmp, { recursive: true, force: true });
+  }, 10000);
+
+  it("lets a requested account switch supersede a pending proactive swap", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ccswap-runner-"));
+    const script = `console.log("idle"); setTimeout(() => {}, 20000);`;
+    let canExit = false;
+    let requested = false;
+    let proactivePending = 0;
+    let requestedPending = 0;
+
+    setTimeout(() => {
+      requested = true;
+      canExit = true;
+    }, 3900);
+
+    const result = await runClaude({
+      claudeBin: NODE_BIN,
+      args: nodeArgs(script),
+      cwd: tmp,
+      env: { ...process.env },
+      accountName: "fake",
+      shouldArmLimit: () => true,
+      shouldConfirmLimit: () => true,
+      shouldProactivelySwap: () => true,
+      shouldApplyRequestedAccount: () => requested,
+      canExitPendingSwap: () => canExit,
+      onProactiveSwapPending: () => {
+        proactivePending += 1;
+      },
+      onRequestedAccountPending: () => {
+        requestedPending += 1;
+      },
+      proactiveQuietMs: 0,
+    });
+
+    expect(result.limitHit).toBe(false);
+    expect(result.proactiveSwap).toBe(false);
+    expect(result.requestedAccountSwap).toBe(true);
+    expect(proactivePending).toBe(1);
+    expect(requestedPending).toBe(1);
     rmSync(tmp, { recursive: true, force: true });
   }, 10000);
 });

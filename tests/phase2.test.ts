@@ -448,6 +448,19 @@ describe("startSessionWatcher", () => {
     };
   }
 
+  function makeAssistantStopLine(timestamp: string) {
+    return {
+      type: "assistant",
+      isSidechain: false,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "done" }],
+        stop_reason: "stop_sequence",
+      },
+      timestamp,
+    };
+  }
+
   function writeState(path: string, sessionId: string | null): void {
     writeFileSync(
       path,
@@ -620,6 +633,54 @@ describe("startSessionWatcher", () => {
     state = JSON.parse(readFileSync(statePath, "utf-8"));
     expect(state.session_id).toBe(active);
     expect(state.last_prompt).toBe("now it is resumable");
+
+    rmSync(home, { recursive: true, force: true });
+    rmSync(runtimeDir, { recursive: true, force: true });
+  });
+
+  it("updates the prompt timestamp when the same prompt text is sent again", async () => {
+    const { home, projectDir, runtimeDir } = setupFakeHome();
+    const statePath = join(runtimeDir, "state.json");
+    writeState(statePath, null);
+
+    const active = "fffffff4-ffff-ffff-ffff-ffffffffffff";
+    const activePath = join(projectDir, `${active}.jsonl`);
+    const firstAt = "2026-04-21T13:30:00Z";
+    const secondAt = "2026-04-21T13:31:00Z";
+
+    writeJsonl(activePath, [
+      { type: "permission-mode", sessionId: active, cwd: LAUNCH_CWD },
+      makePromptLine("repeat me", firstAt),
+    ]);
+
+    const handle = startSessionWatcher({
+      runId: "run-anchor-test",
+      statePath,
+      launchCwd: LAUNCH_CWD,
+      launchedAtMs: Date.now(),
+      expectedSessionId: active,
+      pollMs: 40,
+    });
+
+    await new Promise((r) => setTimeout(r, 160));
+    let state = JSON.parse(readFileSync(statePath, "utf-8"));
+    expect(state.last_prompt).toBe("repeat me");
+    expect(state.last_prompt_at).toBe(firstAt);
+
+    writeJsonl(activePath, [
+      { type: "permission-mode", sessionId: active, cwd: LAUNCH_CWD },
+      makePromptLine("repeat me", firstAt),
+      makeAssistantStopLine("2026-04-21T13:30:30Z"),
+      makePromptLine("repeat me", secondAt),
+    ]);
+    utimesSync(activePath, Date.now() / 1000, Date.now() / 1000);
+
+    await new Promise((r) => setTimeout(r, 200));
+    handle.stop();
+
+    state = JSON.parse(readFileSync(statePath, "utf-8"));
+    expect(state.last_prompt).toBe("repeat me");
+    expect(state.last_prompt_at).toBe(secondAt);
 
     rmSync(home, { recursive: true, force: true });
     rmSync(runtimeDir, { recursive: true, force: true });

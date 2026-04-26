@@ -321,22 +321,22 @@ describe("config + accounts", () => {
       }],
       auth_mode: "oauth_env",
     });
-    writeJson(pathsMod.STATE_PATH, { active_account: null, last_account: null });
+    writeJson(pathsMod.STATE_PATH, { default_account: null, last_default_account: null });
 
     const { runUse } = await import("../src/commands/use.js");
     expect(runUse("work")).toBe(0);
 
     const state = JSON.parse(readFileSync(pathsMod.STATE_PATH, "utf-8")) as {
-      active_account: string | null;
-      last_account: string | null;
+      default_account: string | null;
+      last_default_account: string | null;
     };
-    expect(state.active_account).toBe("work");
+    expect(state.default_account).toBe("work");
     expect(getAccountCredential).toHaveBeenCalledOnce();
     expect(parseStoredCredential).toHaveBeenCalledWith("secret");
     expect(activateAccountCredential).not.toHaveBeenCalled();
   });
 
-  it("sets the first successful login as active when no default exists", async () => {
+  it("sets the first successful login as default when no default exists", async () => {
     const pathsMod = await import("../src/core/paths.js");
     vi.doMock("../src/claude/pty-interactive.js", () => ({
       runInteractive: vi.fn(async () => ({ exitCode: 0 })),
@@ -359,11 +359,11 @@ describe("config + accounts", () => {
     });
 
     const state = JSON.parse(readFileSync(pathsMod.STATE_PATH, "utf-8")) as {
-      active_account: string | null;
-      last_account: string | null;
+      default_account: string | null;
+      last_default_account: string | null;
     };
-    expect(state.active_account).toBe("work@example.com");
-    expect(state.last_account).toBe("work@example.com");
+    expect(state.default_account).toBe("work@example.com");
+    expect(state.last_default_account).toBe("work@example.com");
   });
 
   it("reuses an existing account when a new login reports the same email", async () => {
@@ -409,7 +409,7 @@ describe("config + accounts", () => {
     expect(storeAccountCredential).toHaveBeenCalledOnce();
   });
 
-  it("promotes the next logged-in account when removing the active account", async () => {
+  it("promotes the next logged-in account when removing the default account", async () => {
     const pathsMod = await import("../src/core/paths.js");
     const { writeJson } = await import("../src/core/fs-util.js");
     const deleteAccountCredential = vi.fn();
@@ -441,17 +441,17 @@ describe("config + accounts", () => {
         },
       ],
     });
-    writeJson(pathsMod.STATE_PATH, { active_account: "work", last_account: "work" });
+    writeJson(pathsMod.STATE_PATH, { default_account: "work", last_default_account: "work" });
 
     const { runAccountRemove } = await import("../src/commands/account.js");
     expect(runAccountRemove("work")).toBe(0);
 
     const state = JSON.parse(readFileSync(pathsMod.STATE_PATH, "utf-8")) as {
-      active_account: string | null;
-      last_account: string | null;
+      default_account: string | null;
+      last_default_account: string | null;
     };
-    expect(state.active_account).toBe("side");
-    expect(state.last_account).toBe("side");
+    expect(state.default_account).toBe("side");
+    expect(state.last_default_account).toBe("side");
     expect(deleteAccountCredential).toHaveBeenCalledOnce();
   });
 

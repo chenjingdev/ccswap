@@ -14,7 +14,7 @@ export async function runClaudeCommand(opts: RunOptions): Promise<number> {
   }
   const state = loadState();
   if (opts.account) {
-    state.active_account = opts.account;
+    state.default_account = opts.account;
     saveState(state);
   }
   let args = opts.args;

@@ -22,6 +22,9 @@ export interface RunnerOptions {
   onRequestedAccountPending?: () => void;
   onRequestedAccountBoundary?: () => void;
   onAuthFailure?: (failure: ClaudeAuthFailure) => void;
+  canExitPendingSwap?: () => boolean;
+  shouldReplayProactiveSwap?: () => boolean;
+  shouldReplayRequestedAccountSwap?: () => boolean;
   proactiveQuietMs?: number;
   proactiveMaxWaitMs?: number;
 }
@@ -41,8 +44,6 @@ const LIMIT_GRACE_MS = 1000;
 const LIMIT_TERM_DELAY_MS = 1000;
 const LIMIT_KILL_DELAY_MS = 2500;
 const PROACTIVE_QUIET_MS = 1500;
-const PROACTIVE_MAX_WAIT_MS = 30000;
-
 function getWinsize(): { cols: number; rows: number } {
   return {
     cols: process.stdout.columns ?? 80,
@@ -87,10 +88,15 @@ export async function runClaude(opts: RunnerOptions): Promise<RunnerResult> {
   let authFailure: ClaudeAuthFailure | null = null;
   let lastActivityAt = Date.now();
   const proactiveQuietMs = Math.max(0, opts.proactiveQuietMs ?? PROACTIVE_QUIET_MS);
-  const proactiveMaxWaitMs = Math.max(0, opts.proactiveMaxWaitMs ?? PROACTIVE_MAX_WAIT_MS);
+  const proactiveMaxWaitMs = opts.proactiveMaxWaitMs === undefined
+    ? null
+    : Math.max(0, opts.proactiveMaxWaitMs);
 
   const armed = (): boolean => (opts.shouldArmLimit ? opts.shouldArmLimit() : true);
-  const isQuiet = (now = Date.now()): boolean => now - lastActivityAt >= proactiveQuietMs;
+  const requestedAccountAvailable = async (): Promise<boolean> => {
+    if (!opts.shouldApplyRequestedAccount) return false;
+    return Boolean(await opts.shouldApplyRequestedAccount());
+  };
   const markActivity = (): void => {
     lastActivityAt = Date.now();
   };
@@ -216,7 +222,11 @@ export async function runClaude(opts: RunnerOptions): Promise<RunnerResult> {
     if (!proactivePending || proactivePendingAt === null || limitExitRequested || proactiveSwapRequested || requestedAccountSwapRequested) return;
     const quietForMs = now - lastActivityAt;
     const pendingForMs = now - proactivePendingAt;
-    if (quietForMs >= proactiveQuietMs || pendingForMs >= proactiveMaxWaitMs) {
+    const quiet = quietForMs >= proactiveQuietMs;
+    const forced = proactiveMaxWaitMs !== null && pendingForMs >= proactiveMaxWaitMs;
+    const safe = forced || opts.canExitPendingSwap?.() !== false;
+    if ((quiet && safe) || forced) {
+      proactiveSwapNeedsPrompt = proactiveSwapNeedsPrompt || (forced && !quiet);
       requestProactiveExit();
     }
   };
@@ -233,21 +243,42 @@ export async function runClaude(opts: RunnerOptions): Promise<RunnerResult> {
     }
     const quietForMs = now - lastActivityAt;
     const pendingForMs = now - requestedAccountPendingAt;
-    if (quietForMs >= proactiveQuietMs || pendingForMs >= proactiveMaxWaitMs) {
+    const quiet = quietForMs >= proactiveQuietMs;
+    const forced = proactiveMaxWaitMs !== null && pendingForMs >= proactiveMaxWaitMs;
+    const safe = forced || opts.canExitPendingSwap?.() !== false;
+    if ((quiet && safe) || forced) {
+      requestedAccountSwapNeedsPrompt = Boolean(opts.shouldReplayRequestedAccountSwap?.()) || (forced && !quiet);
       requestRequestedAccountExit();
     }
   };
 
   async function processProactiveTick(): Promise<void> {
-    if (!opts.shouldProactivelySwap || limitExitRequested || proactiveSwapRequested || requestedAccountSwapRequested || proactiveCheckInFlight) return;
+    if (
+      !opts.shouldProactivelySwap ||
+      limitExitRequested ||
+      proactiveSwapRequested ||
+      requestedAccountSwapRequested ||
+      requestedAccountPending ||
+      proactiveCheckInFlight
+    ) {
+      return;
+    }
     proactiveCheckInFlight = true;
     try {
       if (proactivePending) {
+        if (await requestedAccountAvailable()) {
+          proactivePending = false;
+          proactivePendingAt = null;
+          proactiveSwapNeedsPrompt = false;
+          return;
+        }
         maybeExitAtProactiveBoundary();
         return;
       }
+      if (await requestedAccountAvailable()) return;
       const shouldSwap = await opts.shouldProactivelySwap();
       if (!shouldSwap || limitExitRequested || proactiveSwapRequested || requestedAccountSwapRequested) return;
+      if (await requestedAccountAvailable()) return;
       if (opts.onProactiveSwap) {
         const handled = await opts.onProactiveSwap();
         if (handled) return;
@@ -255,7 +286,7 @@ export async function runClaude(opts: RunnerOptions): Promise<RunnerResult> {
       if (limitExitRequested || proactiveSwapRequested || requestedAccountSwapRequested) return;
       proactivePending = true;
       proactivePendingAt = Date.now();
-      proactiveSwapNeedsPrompt = !isQuiet(proactivePendingAt);
+      proactiveSwapNeedsPrompt = Boolean(opts.shouldReplayProactiveSwap?.());
       try {
         opts.onProactiveSwapPending?.();
       } catch {
@@ -287,9 +318,12 @@ export async function runClaude(opts: RunnerOptions): Promise<RunnerResult> {
       }
       const shouldSwap = await opts.shouldApplyRequestedAccount();
       if (!shouldSwap || limitExitRequested || proactiveSwapRequested || requestedAccountSwapRequested) return;
+      proactivePending = false;
+      proactivePendingAt = null;
+      proactiveSwapNeedsPrompt = false;
       requestedAccountPending = true;
       requestedAccountPendingAt = Date.now();
-      requestedAccountSwapNeedsPrompt = !isQuiet(requestedAccountPendingAt);
+      requestedAccountSwapNeedsPrompt = Boolean(opts.shouldReplayRequestedAccountSwap?.());
       try {
         opts.onRequestedAccountPending?.();
       } catch {

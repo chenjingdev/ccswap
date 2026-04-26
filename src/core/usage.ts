@@ -42,6 +42,13 @@ export interface UsageSnapshot {
   cache_timestamp_ms: number | null;
 }
 
+export interface AccountUsageThresholdStatus {
+  atOrAbove: boolean;
+  fiveHourPct: number | null;
+  fiveHourResetAt: string | null;
+  fiveHourResetMs: number | null;
+}
+
 export interface StatusLineRateLimitsInput {
   rate_limits?: {
     five_hour?: Record<string, unknown> | null;
@@ -565,10 +572,20 @@ export async function isAccountUsageAtOrAbove(
   forceRefresh = false,
 ): Promise<boolean> {
   if (forceRefresh) await refreshAccountUsage(account, true);
+  return getAccountUsageThresholdStatus(account, thresholdPct).atOrAbove;
+}
+
+export function getAccountUsageThresholdStatus(
+  account: AccountData,
+  thresholdPct: number,
+): AccountUsageThresholdStatus {
   const threshold = Math.max(1, Math.min(100, Math.round(thresholdPct)));
   const snapshot = loadUsageCache(accountUsageCachePath(account));
-  return (
-    (snapshot.five_hour_pct !== null && snapshot.five_hour_pct >= threshold) ||
-    (snapshot.seven_day_pct !== null && snapshot.seven_day_pct >= threshold)
-  );
+  const resetMs = snapshot.five_hour_reset_at ? Date.parse(snapshot.five_hour_reset_at) : Number.NaN;
+  return {
+    atOrAbove: snapshot.five_hour_pct !== null && snapshot.five_hour_pct >= threshold,
+    fiveHourPct: snapshot.five_hour_pct,
+    fiveHourResetAt: snapshot.five_hour_reset_at,
+    fiveHourResetMs: Number.isFinite(resetMs) ? resetMs : null,
+  };
 }

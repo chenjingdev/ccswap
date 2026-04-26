@@ -20,9 +20,9 @@ export function runUse(name: string): number {
     console.error(auth.error.trimEnd());
     return 1;
   }
-  state.last_account = state.active_account;
-  state.active_account = account.name;
+  state.last_default_account = state.default_account;
+  state.default_account = account.name;
   saveState(state);
-  console.log(`switched to "${account.name}"`);
+  console.log(`default account set to "${account.name}"`);
   return 0;
 }

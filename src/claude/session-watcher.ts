@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -41,6 +41,25 @@ function projectDirForCwd(cwd: string): string {
   return join(claudeProjectsDir(), encodeClaudeProjectDir(cwd));
 }
 
+function realCwd(cwd: string): string {
+  try {
+    return realpathSync.native(cwd);
+  } catch {
+    return cwd;
+  }
+}
+
+function projectDirsForCwd(cwd: string): string[] {
+  const dirs = [projectDirForCwd(cwd)];
+  const real = realCwd(cwd);
+  if (real !== cwd) dirs.push(projectDirForCwd(real));
+  return Array.from(new Set(dirs));
+}
+
+function cwdMatches(actual: string, expected: string): boolean {
+  return actual === expected || realCwd(actual) === realCwd(expected);
+}
+
 interface JsonlFileInfo {
   path: string;
   sessionId: string;
@@ -80,7 +99,7 @@ function verifyCwdInHeader(path: string, expectedCwd: string): boolean {
     const header = nl === -1 ? raw : raw.slice(0, nl);
     if (!header) return false;
     const obj = JSON.parse(header) as { cwd?: unknown };
-    if (typeof obj.cwd === "string" && obj.cwd === expectedCwd) return true;
+    if (typeof obj.cwd === "string" && cwdMatches(obj.cwd, expectedCwd)) return true;
     // Header line may not carry cwd (e.g., permission-mode/file-history). Scan
     // a small prefix for the first entry that does.
     const scanEnd = Math.min(raw.length, 8192);
@@ -91,7 +110,7 @@ function verifyCwdInHeader(path: string, expectedCwd: string): boolean {
       if (line) {
         try {
           const o = JSON.parse(line) as { cwd?: unknown };
-          if (typeof o.cwd === "string") return o.cwd === expectedCwd;
+          if (typeof o.cwd === "string") return cwdMatches(o.cwd, expectedCwd);
         } catch {
           // skip malformed line
         }
@@ -164,24 +183,40 @@ interface ExtractedPrompt {
   timestamp: string | null;
 }
 
+interface ExtractedTurnState {
+  prompt: ExtractedPrompt | null;
+  assistantStopAt: string | null;
+}
+
 export function extractLastUserPrompt(jsonlPath: string): ExtractedPrompt | null {
+  return extractTurnState(jsonlPath).prompt;
+}
+
+export function extractTurnState(jsonlPath: string): ExtractedTurnState {
   let raw: string;
   try {
     raw = readFileSync(jsonlPath, "utf-8");
   } catch {
-    return null;
+    return { prompt: null, assistantStopAt: null };
   }
-  if (!raw) return null;
+  if (!raw) return { prompt: null, assistantStopAt: null };
   const lines = raw.split("\n");
+  let assistantStopAt: string | null = null;
+  let prompt: ExtractedPrompt | null = null;
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const line = lines[i];
     if (!line) continue;
     const trimmed = line.trim();
     if (!trimmed) continue;
-    const extracted = tryExtractUserPromptLine(trimmed);
-    if (extracted) return extracted;
+    if (assistantStopAt === null) {
+      assistantStopAt = tryExtractAssistantStopTimestamp(trimmed);
+    }
+    if (prompt === null) {
+      prompt = tryExtractUserPromptLine(trimmed);
+    }
+    if (assistantStopAt !== null && prompt !== null) break;
   }
-  return null;
+  return { prompt, assistantStopAt };
 }
 
 function tryExtractUserPromptLine(line: string): ExtractedPrompt | null {
@@ -226,6 +261,27 @@ function tryExtractUserPromptLine(line: string): ExtractedPrompt | null {
   return { text: cleaned, timestamp };
 }
 
+function tryExtractAssistantStopTimestamp(line: string): string | null {
+  let obj: unknown;
+  try {
+    obj = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!obj || typeof obj !== "object") return null;
+  const o = obj as Record<string, unknown>;
+  if (o["type"] !== "assistant") return null;
+  if (o["isSidechain"] === true) return null;
+  const message = o["message"];
+  if (!message || typeof message !== "object") return null;
+  const m = message as Record<string, unknown>;
+  if (m["role"] !== "assistant") return null;
+  const stopReason = m["stop_reason"];
+  if (typeof stopReason !== "string" || !stopReason) return null;
+  if (stopReason === "tool_use" || stopReason === "pause_turn") return null;
+  return typeof o["timestamp"] === "string" ? (o["timestamp"] as string) : null;
+}
+
 function stripSyntheticPromptText(text: string): string | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
@@ -248,7 +304,7 @@ function stripSyntheticPromptText(text: string): string | null {
 
 export function startSessionWatcher(opts: SessionWatcherOptions): SessionWatcherHandle {
   const pollMs = opts.pollMs ?? 400;
-  const projectDir = projectDirForCwd(opts.launchCwd);
+  const projectDirs = projectDirsForCwd(opts.launchCwd);
   const expectedSessionId = opts.expectedSessionId ?? null;
 
   // Snapshot existing jsonl mtimes so the fallback path can distinguish "file
@@ -256,19 +312,21 @@ export function startSessionWatcher(opts: SessionWatcherOptions): SessionWatcher
   // Only used when expectedSessionId is absent.
   const baselineMtimes = new Map<string, number>();
   if (!expectedSessionId) {
-    for (const c of listSessionJsonlFiles(projectDir)) {
-      baselineMtimes.set(c.sessionId, c.mtimeMs);
+    for (const dir of projectDirs) {
+      for (const c of listSessionJsonlFiles(dir)) {
+        baselineMtimes.set(c.sessionId, c.mtimeMs);
+      }
     }
   }
 
   let stopped = false;
   let knownSessionId: string | null = null;
-  let lastPromptSeen: string | null = null;
+  let lastPromptSeenKey: string | null = null;
 
   const tick = (): void => {
     if (stopped) return;
     try {
-      const candidates = listSessionJsonlFiles(projectDir);
+      const candidates = projectDirs.flatMap((dir) => listSessionJsonlFiles(dir));
       const active = pickActiveSession({
         candidates,
         launchCwd: opts.launchCwd,
@@ -284,13 +342,18 @@ export function startSessionWatcher(opts: SessionWatcherOptions): SessionWatcher
         knownSessionId = active.sessionId;
       }
 
-      const prompt = extractLastUserPrompt(active.path);
+      const turnState = extractTurnState(active.path);
+      const prompt = turnState.prompt;
       if (prompt) {
+        const promptKey = prompt.timestamp ? `${prompt.timestamp}\0${prompt.text}` : prompt.text;
         const patch: Parameters<typeof updateRuntimeState>[2] = {
           session_id: active.sessionId,
           cwd: opts.launchCwd,
         };
-        if (prompt.text !== lastPromptSeen) {
+        if (turnState.assistantStopAt) {
+          patch.last_assistant_stop_at = turnState.assistantStopAt;
+        }
+        if (promptKey !== lastPromptSeenKey) {
           patch.last_prompt = prompt.text;
           patch.last_prompt_at = prompt.timestamp ?? new Date().toISOString();
           patch.detector_armed = !prompt.text.trimStart().startsWith("/");
@@ -299,7 +362,7 @@ export function startSessionWatcher(opts: SessionWatcherOptions): SessionWatcher
         if (sessionChanged) {
           opts.onSessionIdDiscovered?.(active.sessionId);
         }
-        lastPromptSeen = prompt.text;
+        lastPromptSeenKey = promptKey;
       }
     } catch {
       // swallow; next tick will retry

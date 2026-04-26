@@ -13,6 +13,7 @@ interface LoggedLaunch {
   mode: string;
   argv: string[];
   sessionId: string | null;
+  accountToken?: string | null;
 }
 
 function readLaunches(logPath: string): LoggedLaunch[] {
@@ -51,9 +52,21 @@ const shouldCreateSyntheticTranscript =
   process.env.FAKE_CLAUDE_CREATE_EMPTY_TRANSCRIPT === "1" ||
   Boolean(process.env.FAKE_CLAUDE_PROMPT_TRANSCRIPT_DELAY_MS);
 const sessionId = requestedSessionId || (shouldCreateSyntheticTranscript ? randomUUID() : null);
+let transcriptPath = null;
 const count = fs.existsSync(counterPath) ? Number(fs.readFileSync(counterPath, "utf8")) + 1 : 1;
 fs.writeFileSync(counterPath, String(count));
-fs.appendFileSync(logPath, JSON.stringify({ count, mode, argv, sessionId }) + "\\n");
+fs.appendFileSync(logPath, JSON.stringify({
+  count,
+  mode,
+  argv,
+  sessionId,
+  accountToken: process.env.CLAUDE_CODE_OAUTH_TOKEN || null,
+}) + "\\n");
+
+const exitAfterMs = Number(process.env.FAKE_CLAUDE_EXIT_AFTER_MS || "0");
+if (exitAfterMs > 0) {
+  setTimeout(() => process.exit(0), exitAfterMs);
+}
 
 if (count === 1 && process.env.FAKE_CLAUDE_RUNTIME_REPLAY) {
   const runtimeDir = path.join(process.env.CCSWAP_CONFIG_DIR, "runtime");
@@ -114,10 +127,25 @@ if (count === 1 && process.env.FAKE_CLAUDE_DYNAMIC_REQUEST_ACCOUNT) {
   }
 }
 
+if (count === 1 && process.env.FAKE_CLAUDE_DYNAMIC_THRESHOLD_PCT) {
+  const threshold = Number(process.env.FAKE_CLAUDE_DYNAMIC_THRESHOLD_PCT);
+  const configPath = path.join(process.env.CCSWAP_CONFIG_DIR, "config.json");
+  fs.writeFileSync(configPath, JSON.stringify({
+    accounts: [
+      { name: "primary", auth_source: "credential", auto_swap: true },
+      { name: "backup", auth_source: "credential", auto_swap: true },
+    ],
+    replay_mode: "continue",
+    custom_prompt: "",
+    proactive_swap_threshold_pct: Number.isFinite(threshold) ? threshold : null,
+    auth_mode: "keychain_copy",
+  }, null, 2) + "\\n");
+}
+
 if (sessionId) {
   const projectDir = path.join(process.env.HOME, ".claude", "projects", encodeProjectDir(process.cwd()));
   fs.mkdirSync(projectDir, { recursive: true });
-  const transcriptPath = path.join(projectDir, sessionId + ".jsonl");
+  transcriptPath = path.join(projectDir, sessionId + ".jsonl");
   const now = new Date().toISOString();
   fs.writeFileSync(transcriptPath, JSON.stringify({ cwd: process.cwd() }) + "\\n");
   const writePrompt = () => {
@@ -138,6 +166,20 @@ if (sessionId) {
   }
 }
 
+function writeAssistantStop() {
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) return;
+  fs.appendFileSync(transcriptPath, JSON.stringify({
+    type: "assistant",
+    isSidechain: false,
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "done" }],
+      stop_reason: "stop_sequence",
+    },
+    timestamp: new Date().toISOString(),
+  }) + "\\n");
+}
+
 function stop() {
   setTimeout(() => process.exit(0), 10);
 }
@@ -153,15 +195,17 @@ if (count >= 2) {
 } else if (mode === "busy") {
   let i = 0;
   const iv = setInterval(() => { console.log("busy", i++); }, 100);
-  setTimeout(() => clearInterval(iv), 2600);
+  setTimeout(() => { clearInterval(iv); writeAssistantStop(); }, 2600);
   setInterval(() => {}, 1000);
 } else if (mode === "silent") {
+  setTimeout(writeAssistantStop, 100);
   setInterval(() => {}, 1000);
 } else if (mode === "auth-failure") {
   console.error("Error: 401 Unauthorized");
   setTimeout(() => process.exit(1), 50);
 } else {
   console.log("first launch idle");
+  setTimeout(writeAssistantStop, 100);
   setInterval(() => {}, 1000);
 }
 `, { mode: 0o600 });
@@ -229,6 +273,8 @@ describe("runClaudeSession relaunch arguments", () => {
     delete process.env.FAKE_CLAUDE_REQUEST_ACCOUNT;
     delete process.env.FAKE_CLAUDE_REQUEST_DELAY_MS;
     delete process.env.FAKE_CLAUDE_DYNAMIC_REQUEST_ACCOUNT;
+    delete process.env.FAKE_CLAUDE_DYNAMIC_THRESHOLD_PCT;
+    delete process.env.FAKE_CLAUDE_EXIT_AFTER_MS;
     delete process.env.FAKE_CLAUDE_SKIP_EMPTY_TRANSCRIPT;
     delete process.env.FAKE_CLAUDE_CREATE_EMPTY_TRANSCRIPT;
     delete process.env.FAKE_CLAUDE_PROMPT_TRANSCRIPT_DELAY_MS;
@@ -239,6 +285,7 @@ describe("runClaudeSession relaunch arguments", () => {
     claudeBin: string,
     proactiveThresholdPct: number | null,
     replayMode: "last_prompt" | "continue" | "custom_prompt" = "last_prompt",
+    authMode: "keychain_copy" | "oauth_env" = "keychain_copy",
   ) {
     return {
       accounts: [
@@ -263,7 +310,7 @@ describe("runClaudeSession relaunch arguments", () => {
       replay_mode: replayMode,
       custom_prompt: "",
       proactive_swap_threshold_pct: proactiveThresholdPct,
-      auth_mode: "keychain_copy" as const,
+      auth_mode: authMode,
     };
   }
 
@@ -273,24 +320,26 @@ describe("runClaudeSession relaunch arguments", () => {
     process.env.FAKE_CLAUDE_COUNTER = join(tempRoot, "counter");
     process.env.FAKE_CLAUDE_MODE = "silent";
     process.env.FAKE_CLAUDE_PROMPT = PROMPT;
+    process.env.FAKE_CLAUDE_DYNAMIC_THRESHOLD_PCT = "1";
     const fakeClaude = createFakeClaude(tempRoot);
 
-    vi.doMock("../src/core/usage.js", () => ({
+    vi.doMock("../src/core/usage.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/core/usage.js")>("../src/core/usage.js")),
       isAccountUsageAtOrAbove: vi.fn((account: { name: string }) => account.name === "primary"),
       isAccountUsageExhausted: vi.fn(() => false),
     }));
     const { runClaudeSession } = await import("../src/claude/session.js");
 
-    const state = { active_account: "primary", last_account: "primary" };
+    const state = { default_account: "primary", last_default_account: "primary" };
     const exitCode = await runClaudeSession({
-      config: baseConfig(fakeClaude, 1),
+      config: baseConfig(fakeClaude, null),
       state,
       originalArgs: [PROMPT],
       launchCwd: tempRoot,
     });
 
     expect(exitCode).toBe(0);
-    expect(state.active_account).toBe("primary");
+    expect(state.default_account).toBe("primary");
     const launches = readLaunches(logPath);
     expect(launches).toHaveLength(2);
     expect(launches[0]!.argv).toContain(PROMPT);
@@ -300,23 +349,56 @@ describe("runClaudeSession relaunch arguments", () => {
     expect(launches[1]!.argv).not.toContain(DEFAULT_CONTINUE_PROMPT);
   }, 12000);
 
-  it("restarts active proactive swaps with --resume and a continuation prompt", async () => {
+  it("starts empty interactive launches on a ready account when the default is already at threshold", async () => {
     const logPath = join(tempRoot, "launches.jsonl");
     process.env.FAKE_CLAUDE_LOG = logPath;
     process.env.FAKE_CLAUDE_COUNTER = join(tempRoot, "counter");
-    process.env.FAKE_CLAUDE_MODE = "busy";
-    process.env.FAKE_CLAUDE_PROMPT = PROMPT;
+    process.env.FAKE_CLAUDE_MODE = "manual";
+    process.env.FAKE_CLAUDE_EXIT_AFTER_MS = "500";
     const fakeClaude = createFakeClaude(tempRoot);
 
-    vi.doMock("../src/core/usage.js", () => ({
+    vi.doMock("../src/core/usage.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/core/usage.js")>("../src/core/usage.js")),
       isAccountUsageAtOrAbove: vi.fn((account: { name: string }) => account.name === "primary"),
       isAccountUsageExhausted: vi.fn(() => false),
     }));
     const { runClaudeSession } = await import("../src/claude/session.js");
 
-    const state = { active_account: "primary", last_account: "primary" };
+    const state = { default_account: "primary", last_default_account: "primary" };
     const exitCode = await runClaudeSession({
-      config: baseConfig(fakeClaude, 1),
+      config: baseConfig(fakeClaude, 1, "continue", "oauth_env"),
+      state,
+      originalArgs: [],
+      launchCwd: tempRoot,
+    });
+
+    expect(exitCode).toBe(0);
+    const launches = readLaunches(logPath);
+    expect(launches).toHaveLength(1);
+    expect(launches[0]!.accountToken).toBe("token-backup");
+    expect(launches[0]!.argv).not.toContain("--resume");
+    expect(launches[0]!.argv).not.toContain("--session-id");
+  }, 12000);
+
+  it("keeps active proactive swaps pending until quiet and resumes with a continuation prompt", async () => {
+    const logPath = join(tempRoot, "launches.jsonl");
+    process.env.FAKE_CLAUDE_LOG = logPath;
+    process.env.FAKE_CLAUDE_COUNTER = join(tempRoot, "counter");
+    process.env.FAKE_CLAUDE_MODE = "busy";
+    process.env.FAKE_CLAUDE_PROMPT = PROMPT;
+    process.env.FAKE_CLAUDE_DYNAMIC_THRESHOLD_PCT = "1";
+    const fakeClaude = createFakeClaude(tempRoot);
+
+    vi.doMock("../src/core/usage.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/core/usage.js")>("../src/core/usage.js")),
+      isAccountUsageAtOrAbove: vi.fn((account: { name: string }) => account.name === "primary"),
+      isAccountUsageExhausted: vi.fn(() => false),
+    }));
+    const { runClaudeSession } = await import("../src/claude/session.js");
+
+    const state = { default_account: "primary", last_default_account: "primary" };
+    const exitCode = await runClaudeSession({
+      config: baseConfig(fakeClaude, null),
       state,
       originalArgs: [PROMPT],
       launchCwd: tempRoot,
@@ -330,21 +412,23 @@ describe("runClaudeSession relaunch arguments", () => {
     expect(launches[1]!.argv).toContain(DEFAULT_CONTINUE_PROMPT);
   }, 12000);
 
-  it("restarts hard-limit swaps with --resume and last prompt replay", async () => {
+  it("applies proactive threshold changes made after the session started", async () => {
     const logPath = join(tempRoot, "launches.jsonl");
     process.env.FAKE_CLAUDE_LOG = logPath;
     process.env.FAKE_CLAUDE_COUNTER = join(tempRoot, "counter");
-    process.env.FAKE_CLAUDE_MODE = "hard-limit";
+    process.env.FAKE_CLAUDE_MODE = "silent";
     process.env.FAKE_CLAUDE_PROMPT = PROMPT;
+    process.env.FAKE_CLAUDE_DYNAMIC_THRESHOLD_PCT = "1";
     const fakeClaude = createFakeClaude(tempRoot);
 
-    vi.doMock("../src/core/usage.js", () => ({
-      isAccountUsageAtOrAbove: vi.fn(() => false),
-      isAccountUsageExhausted: vi.fn(() => true),
+    vi.doMock("../src/core/usage.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/core/usage.js")>("../src/core/usage.js")),
+      isAccountUsageAtOrAbove: vi.fn((account: { name: string }) => account.name === "primary"),
+      isAccountUsageExhausted: vi.fn(() => false),
     }));
     const { runClaudeSession } = await import("../src/claude/session.js");
 
-    const state = { active_account: "primary", last_account: "primary" };
+    const state = { default_account: "primary", last_default_account: "primary" };
     const exitCode = await runClaudeSession({
       config: baseConfig(fakeClaude, null),
       state,
@@ -353,7 +437,152 @@ describe("runClaudeSession relaunch arguments", () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(state.active_account).toBe("primary");
+    const launches = readLaunches(logPath);
+    expect(launches).toHaveLength(2);
+    expect(launches[1]!.argv.slice(0, 2)).toEqual(["--resume", launches[0]!.sessionId]);
+    expect(launches[1]!.argv).not.toContain(DEFAULT_CONTINUE_PROMPT);
+  }, 12000);
+
+  it("does not proactively restart an empty interactive launch before a real prompt exists", async () => {
+    const logPath = join(tempRoot, "launches.jsonl");
+    process.env.FAKE_CLAUDE_LOG = logPath;
+    process.env.FAKE_CLAUDE_COUNTER = join(tempRoot, "counter");
+    process.env.FAKE_CLAUDE_MODE = "manual";
+    process.env.FAKE_CLAUDE_DYNAMIC_THRESHOLD_PCT = "1";
+    process.env.FAKE_CLAUDE_EXIT_AFTER_MS = "3000";
+    const fakeClaude = createFakeClaude(tempRoot);
+
+    vi.doMock("../src/core/usage.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/core/usage.js")>("../src/core/usage.js")),
+      isAccountUsageAtOrAbove: vi.fn((account: { name: string }) => account.name === "primary"),
+      isAccountUsageExhausted: vi.fn(() => false),
+    }));
+    const { runClaudeSession } = await import("../src/claude/session.js");
+
+    const state = { default_account: "primary", last_default_account: "primary" };
+    const exitCode = await runClaudeSession({
+      config: baseConfig(fakeClaude, null),
+      state,
+      originalArgs: [],
+      launchCwd: tempRoot,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(readLaunches(logPath)).toHaveLength(1);
+  }, 12000);
+
+  it("keeps a single-account session alive while waiting for the usage reset", async () => {
+    const logPath = join(tempRoot, "launches.jsonl");
+    process.env.FAKE_CLAUDE_LOG = logPath;
+    process.env.FAKE_CLAUDE_COUNTER = join(tempRoot, "counter");
+    process.env.FAKE_CLAUDE_MODE = "silent";
+    process.env.FAKE_CLAUDE_PROMPT = PROMPT;
+    process.env.FAKE_CLAUDE_EXIT_AFTER_MS = "4500";
+    const fakeClaude = createFakeClaude(tempRoot);
+    const resetAtMs = Date.now() + 60_000;
+
+    vi.doMock("../src/core/usage.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/core/usage.js")>("../src/core/usage.js")),
+      getAccountUsageThresholdStatus: vi.fn((_account: { name: string }, threshold: number) => ({
+        atOrAbove: true,
+        fiveHourPct: threshold,
+        fiveHourResetAt: new Date(resetAtMs).toISOString(),
+        fiveHourResetMs: resetAtMs,
+      })),
+      isAccountUsageAtOrAbove: vi.fn(() => true),
+      isAccountUsageExhausted: vi.fn(() => false),
+      refreshAccountUsage: vi.fn(async () => true),
+    }));
+    const { runClaudeSession } = await import("../src/claude/session.js");
+
+    const config = baseConfig(fakeClaude, 1, "continue");
+    config.accounts = [config.accounts[0]!];
+    const state = { default_account: "primary", last_default_account: "primary" };
+    const exitCode = await runClaudeSession({
+      config,
+      state,
+      originalArgs: [PROMPT],
+      launchCwd: tempRoot,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(readLaunches(logPath)).toHaveLength(1);
+  }, 10000);
+
+  it("waits for the earliest usage reset before swapping to the first ready account", async () => {
+    const logPath = join(tempRoot, "launches.jsonl");
+    process.env.FAKE_CLAUDE_LOG = logPath;
+    process.env.FAKE_CLAUDE_COUNTER = join(tempRoot, "counter");
+    process.env.FAKE_CLAUDE_MODE = "silent";
+    process.env.FAKE_CLAUDE_PROMPT = PROMPT;
+    const fakeClaude = createFakeClaude(tempRoot);
+    const resetAtMs = Date.now() + 2500;
+    let refreshed = false;
+    const atOrAbove = (account: { name: string }): boolean =>
+      account.name === "primary" || (account.name === "backup" && !refreshed);
+
+    vi.doMock("../src/core/usage.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/core/usage.js")>("../src/core/usage.js")),
+      getAccountUsageThresholdStatus: vi.fn((account: { name: string }, threshold: number) => {
+        const over = atOrAbove(account);
+        return {
+          atOrAbove: over,
+          fiveHourPct: over ? threshold : 0,
+          fiveHourResetAt: over ? new Date(resetAtMs).toISOString() : null,
+          fiveHourResetMs: over ? resetAtMs : null,
+        };
+      }),
+      isAccountUsageAtOrAbove: vi.fn((account: { name: string }) => atOrAbove(account)),
+      isAccountUsageExhausted: vi.fn(() => false),
+      refreshAccountUsage: vi.fn(async () => {
+        refreshed = true;
+        return true;
+      }),
+    }));
+    const { runClaudeSession } = await import("../src/claude/session.js");
+
+    const startedAt = Date.now();
+    const state = { default_account: "primary", last_default_account: "primary" };
+    const exitCode = await runClaudeSession({
+      config: baseConfig(fakeClaude, 1, "continue", "oauth_env"),
+      state,
+      originalArgs: [PROMPT],
+      launchCwd: tempRoot,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(3000);
+    const launches = readLaunches(logPath);
+    expect(launches).toHaveLength(2);
+    expect(launches[1]!.accountToken).toBe("token-backup");
+    expect(launches[1]!.argv.slice(0, 2)).toEqual(["--resume", launches[0]!.sessionId]);
+  }, 12000);
+
+  it("restarts hard-limit swaps with --resume and last prompt replay", async () => {
+    const logPath = join(tempRoot, "launches.jsonl");
+    process.env.FAKE_CLAUDE_LOG = logPath;
+    process.env.FAKE_CLAUDE_COUNTER = join(tempRoot, "counter");
+    process.env.FAKE_CLAUDE_MODE = "hard-limit";
+    process.env.FAKE_CLAUDE_PROMPT = PROMPT;
+    const fakeClaude = createFakeClaude(tempRoot);
+
+    vi.doMock("../src/core/usage.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/core/usage.js")>("../src/core/usage.js")),
+      isAccountUsageAtOrAbove: vi.fn(() => false),
+      isAccountUsageExhausted: vi.fn(() => true),
+    }));
+    const { runClaudeSession } = await import("../src/claude/session.js");
+
+    const state = { default_account: "primary", last_default_account: "primary" };
+    const exitCode = await runClaudeSession({
+      config: baseConfig(fakeClaude, null),
+      state,
+      originalArgs: [PROMPT],
+      launchCwd: tempRoot,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(state.default_account).toBe("primary");
     const launches = readLaunches(logPath);
     expect(launches).toHaveLength(2);
     expect(launches[0]!.sessionId).toBeTruthy();
@@ -369,13 +598,14 @@ describe("runClaudeSession relaunch arguments", () => {
     process.env.FAKE_CLAUDE_PROMPT = PROMPT;
     const fakeClaude = createFakeClaude(tempRoot);
 
-    vi.doMock("../src/core/usage.js", () => ({
+    vi.doMock("../src/core/usage.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/core/usage.js")>("../src/core/usage.js")),
       isAccountUsageAtOrAbove: vi.fn(() => false),
       isAccountUsageExhausted: vi.fn(() => true),
     }));
     const { runClaudeSession } = await import("../src/claude/session.js");
 
-    const state = { active_account: "primary", last_account: "primary" };
+    const state = { default_account: "primary", last_default_account: "primary" };
     const exitCode = await runClaudeSession({
       config: baseConfig(fakeClaude, null, "continue"),
       state,
@@ -384,7 +614,7 @@ describe("runClaudeSession relaunch arguments", () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(state.active_account).toBe("primary");
+    expect(state.default_account).toBe("primary");
     const launches = readLaunches(logPath);
     expect(launches).toHaveLength(2);
     expect(launches[0]!.sessionId).toBeTruthy();
@@ -403,13 +633,14 @@ describe("runClaudeSession relaunch arguments", () => {
     process.env.FAKE_CLAUDE_RUNTIME_PROMPT = "session custom go";
     const fakeClaude = createFakeClaude(tempRoot);
 
-    vi.doMock("../src/core/usage.js", () => ({
+    vi.doMock("../src/core/usage.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/core/usage.js")>("../src/core/usage.js")),
       isAccountUsageAtOrAbove: vi.fn(() => false),
       isAccountUsageExhausted: vi.fn(() => true),
     }));
     const { runClaudeSession } = await import("../src/claude/session.js");
 
-    const state = { active_account: "primary", last_account: "primary" };
+    const state = { default_account: "primary", last_default_account: "primary" };
     const exitCode = await runClaudeSession({
       config: baseConfig(fakeClaude, null, "last_prompt"),
       state,
@@ -425,23 +656,25 @@ describe("runClaudeSession relaunch arguments", () => {
     expect(launches[1]!.argv).not.toContain(PROMPT);
   }, 12000);
 
-  it("applies a requested account switch by resuming the same session with the selected replay settings", async () => {
+  it("applies an idle requested account switch without replay prompt after startup output", async () => {
     const logPath = join(tempRoot, "launches.jsonl");
     process.env.FAKE_CLAUDE_LOG = logPath;
     process.env.FAKE_CLAUDE_COUNTER = join(tempRoot, "counter");
     process.env.FAKE_CLAUDE_MODE = "manual";
     process.env.FAKE_CLAUDE_PROMPT = PROMPT;
     process.env.FAKE_CLAUDE_REQUEST_ACCOUNT = "backup";
+    process.env.FAKE_CLAUDE_REQUEST_DELAY_MS = "200";
     const fakeClaude = createFakeClaude(tempRoot);
 
-    vi.doMock("../src/core/usage.js", () => ({
+    vi.doMock("../src/core/usage.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/core/usage.js")>("../src/core/usage.js")),
       isAccountUsageAtOrAbove: vi.fn(() => false),
       isAccountUsageExhausted: vi.fn(() => false),
     }));
     const { runClaudeSession } = await import("../src/claude/session.js");
     const { loadState, saveState } = await import("../src/core/state.js");
 
-    const state = { active_account: "primary", last_account: "primary" };
+    const state = { default_account: "primary", last_default_account: "primary" };
     saveState(state);
     const exitCode = await runClaudeSession({
       config: baseConfig(fakeClaude, null, "continue"),
@@ -451,12 +684,87 @@ describe("runClaudeSession relaunch arguments", () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(state.active_account).toBe("primary");
-    expect(loadState().active_account).toBe("primary");
+    expect(state.default_account).toBe("primary");
+    expect(loadState().default_account).toBe("primary");
     const launches = readLaunches(logPath);
     expect(launches).toHaveLength(2);
     expect(launches[1]!.argv.slice(0, 2)).toEqual(["--resume", launches[0]!.sessionId]);
     expect(launches[1]!.argv).not.toContain(PROMPT);
+    expect(launches[1]!.argv).not.toContain(DEFAULT_CONTINUE_PROMPT);
+  }, 12000);
+
+  it("keeps active requested account switches pending until quiet with a continuation prompt", async () => {
+    const logPath = join(tempRoot, "launches.jsonl");
+    process.env.FAKE_CLAUDE_LOG = logPath;
+    process.env.FAKE_CLAUDE_COUNTER = join(tempRoot, "counter");
+    process.env.FAKE_CLAUDE_MODE = "busy";
+    process.env.FAKE_CLAUDE_PROMPT = PROMPT;
+    process.env.FAKE_CLAUDE_REQUEST_ACCOUNT = "backup";
+    process.env.FAKE_CLAUDE_REQUEST_DELAY_MS = "700";
+    const fakeClaude = createFakeClaude(tempRoot);
+
+    vi.doMock("../src/core/usage.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/core/usage.js")>("../src/core/usage.js")),
+      isAccountUsageAtOrAbove: vi.fn(() => false),
+      isAccountUsageExhausted: vi.fn(() => false),
+    }));
+    const { runClaudeSession } = await import("../src/claude/session.js");
+
+    const state = { default_account: "primary", last_default_account: "primary" };
+    const exitCode = await runClaudeSession({
+      config: baseConfig(fakeClaude, null, "continue"),
+      state,
+      originalArgs: [PROMPT],
+      launchCwd: tempRoot,
+    });
+
+    expect(exitCode).toBe(0);
+    const launches = readLaunches(logPath);
+    expect(launches).toHaveLength(2);
+    expect(launches[1]!.argv.slice(0, 2)).toEqual(["--resume", launches[0]!.sessionId]);
+    expect(launches[1]!.argv).not.toContain(PROMPT);
+    expect(launches[1]!.argv).toContain(DEFAULT_CONTINUE_PROMPT);
+  }, 12000);
+
+  it("lets a live requested account switch override a pending proactive threshold swap", async () => {
+    const logPath = join(tempRoot, "launches.jsonl");
+    process.env.FAKE_CLAUDE_LOG = logPath;
+    process.env.FAKE_CLAUDE_COUNTER = join(tempRoot, "counter");
+    process.env.FAKE_CLAUDE_MODE = "busy";
+    process.env.FAKE_CLAUDE_PROMPT = PROMPT;
+    process.env.FAKE_CLAUDE_REQUEST_ACCOUNT = "manual";
+    process.env.FAKE_CLAUDE_REQUEST_DELAY_MS = "2300";
+    const fakeClaude = createFakeClaude(tempRoot);
+
+    vi.doMock("../src/core/usage.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/core/usage.js")>("../src/core/usage.js")),
+      isAccountUsageAtOrAbove: vi.fn((account: { name: string }) => account.name === "primary"),
+      isAccountUsageExhausted: vi.fn(() => false),
+    }));
+    const { runClaudeSession } = await import("../src/claude/session.js");
+
+    const config = baseConfig(fakeClaude, 1, "continue", "oauth_env");
+    config.accounts.push({
+      name: "manual",
+      auth_source: "credential",
+      auto_swap: true,
+      keychain_service: "svc-manual",
+      keychain_account: "acct",
+      email: null,
+    });
+    const state = { default_account: "primary", last_default_account: "primary" };
+    const exitCode = await runClaudeSession({
+      config,
+      state,
+      originalArgs: [PROMPT],
+      launchCwd: tempRoot,
+    });
+
+    expect(exitCode).toBe(0);
+    const launches = readLaunches(logPath);
+    expect(launches).toHaveLength(2);
+    expect(launches[1]!.accountToken).toBe("token-manual");
+    expect(launches[1]!.argv.slice(0, 2)).toEqual(["--resume", launches[0]!.sessionId]);
     expect(launches[1]!.argv).toContain(DEFAULT_CONTINUE_PROMPT);
   }, 12000);
 
@@ -470,13 +778,14 @@ describe("runClaudeSession relaunch arguments", () => {
     process.env.FAKE_CLAUDE_REQUEST_DELAY_MS = "2500";
     const fakeClaude = createFakeClaude(tempRoot);
 
-    vi.doMock("../src/core/usage.js", () => ({
+    vi.doMock("../src/core/usage.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/core/usage.js")>("../src/core/usage.js")),
       isAccountUsageAtOrAbove: vi.fn(() => false),
       isAccountUsageExhausted: vi.fn(() => false),
     }));
     const { runClaudeSession } = await import("../src/claude/session.js");
 
-    const state = { active_account: "primary", last_account: "primary" };
+    const state = { default_account: "primary", last_default_account: "primary" };
     const exitCode = await runClaudeSession({
       config: baseConfig(fakeClaude, null, "continue"),
       state,
@@ -503,13 +812,14 @@ describe("runClaudeSession relaunch arguments", () => {
     process.env.FAKE_CLAUDE_CREATE_EMPTY_TRANSCRIPT = "1";
     const fakeClaude = createFakeClaude(tempRoot);
 
-    vi.doMock("../src/core/usage.js", () => ({
+    vi.doMock("../src/core/usage.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/core/usage.js")>("../src/core/usage.js")),
       isAccountUsageAtOrAbove: vi.fn(() => false),
       isAccountUsageExhausted: vi.fn(() => false),
     }));
     const { runClaudeSession } = await import("../src/claude/session.js");
 
-    const state = { active_account: "primary", last_account: "primary" };
+    const state = { default_account: "primary", last_default_account: "primary" };
     const exitCode = await runClaudeSession({
       config: baseConfig(fakeClaude, null, "continue"),
       state,
@@ -535,7 +845,8 @@ describe("runClaudeSession relaunch arguments", () => {
     process.env.FAKE_CLAUDE_DYNAMIC_REQUEST_ACCOUNT = "backup";
     const fakeClaude = createFakeClaude(tempRoot);
 
-    vi.doMock("../src/core/usage.js", () => ({
+    vi.doMock("../src/core/usage.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/core/usage.js")>("../src/core/usage.js")),
       isAccountUsageAtOrAbove: vi.fn(() => false),
       isAccountUsageExhausted: vi.fn(() => false),
     }));
@@ -543,7 +854,7 @@ describe("runClaudeSession relaunch arguments", () => {
 
     const config = baseConfig(fakeClaude, null, "continue");
     config.accounts = [config.accounts[0]!];
-    const state = { active_account: "primary", last_account: "primary" };
+    const state = { default_account: "primary", last_default_account: "primary" };
     const exitCode = await runClaudeSession({
       config,
       state,
@@ -555,7 +866,7 @@ describe("runClaudeSession relaunch arguments", () => {
     const launches = readLaunches(logPath);
     expect(launches).toHaveLength(2);
     expect(launches[1]!.argv.slice(0, 2)).toEqual(["--resume", launches[0]!.sessionId]);
-    expect(launches[1]!.argv).toContain(DEFAULT_CONTINUE_PROMPT);
+    expect(launches[1]!.argv).not.toContain(DEFAULT_CONTINUE_PROMPT);
   }, 12000);
 
   it("marks the account for re-login when Claude reports an auth failure", async () => {
@@ -565,14 +876,15 @@ describe("runClaudeSession relaunch arguments", () => {
     process.env.FAKE_CLAUDE_MODE = "auth-failure";
     const fakeClaude = createFakeClaude(tempRoot);
 
-    vi.doMock("../src/core/usage.js", () => ({
+    vi.doMock("../src/core/usage.js", async () => ({
+      ...(await vi.importActual<typeof import("../src/core/usage.js")>("../src/core/usage.js")),
       isAccountUsageAtOrAbove: vi.fn(() => false),
       isAccountUsageExhausted: vi.fn(() => false),
     }));
     const { runClaudeSession } = await import("../src/claude/session.js");
     const { loadConfig, saveConfig } = await import("../src/core/config.js");
 
-    const state = { active_account: "primary", last_account: "primary" };
+    const state = { default_account: "primary", last_default_account: "primary" };
     const config = baseConfig(fakeClaude, null, "continue");
     saveConfig(config);
     const exitCode = await runClaudeSession({

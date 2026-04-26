@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,9 +18,20 @@ describe("App TUI", () => {
   afterEach(() => {
     rmSync(tempRoot, { recursive: true, force: true });
     delete process.env.CCSWAP_CONFIG_DIR;
+    vi.doUnmock("node:fs");
     vi.doUnmock("../src/core/credentials.js");
     vi.doUnmock("../src/core/shim.js");
   });
+
+  async function disableFsWatchForApp(): Promise<void> {
+    vi.doMock("node:fs", async () => {
+      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      return {
+        ...actual,
+        watch: vi.fn(() => ({ close: vi.fn() })),
+      };
+    });
+  }
 
   it("renders empty state when no accounts exist", async () => {
     const { App } = await import("../src/tui/App.js");
@@ -34,7 +45,7 @@ describe("App TUI", () => {
     unmount();
   });
 
-  it("renders account rows with active marker and status", async () => {
+  it("renders account rows with default marker and status", async () => {
     const { loadConfig } = await import("../src/core/config.js");
     const { addAccount } = await import("../src/core/accounts.js");
     const { loadState, saveState } = await import("../src/core/state.js");
@@ -44,7 +55,7 @@ describe("App TUI", () => {
     addAccount(cfg, "side");
 
     const st = loadState();
-    st.active_account = "work";
+    st.default_account = "work";
     saveState(st);
 
     const { App } = await import("../src/tui/App.js");
@@ -54,8 +65,9 @@ describe("App TUI", () => {
     const frame = lastFrame() ?? "";
     expect(frame).toContain("work");
     expect(frame).toContain("side");
-    // Active account shows a star marker.
+    // Default account shows a star marker.
     expect(frame).toContain("★");
+    expect(frame).toContain("Default");
     expect(frame).toContain("ACCOUNTS");
     expect(frame).toContain("Usage(5h)");
     expect(frame).toContain("Usage(7d)");
@@ -64,7 +76,7 @@ describe("App TUI", () => {
     unmount();
   });
 
-  it("shows the first logged-in account as the effective active default", async () => {
+  it("shows the first logged-in account as the effective default", async () => {
     vi.doMock("../src/core/credentials.js", () => ({
       deleteAccountCredential: vi.fn(),
       getAccountCredential: vi.fn((account) =>
@@ -84,8 +96,78 @@ describe("App TUI", () => {
       React.createElement(App, { onLoginRequested: () => {}, onAddRequested: () => {}, hasTty: false }),
     );
     const frame = lastFrame() ?? "";
-    expect(frame).toContain("active work");
+    expect(frame).toContain("default work");
     expect(frame).toContain("★");
+    unmount();
+  });
+
+  it("updates the proactive swap threshold from the accounts screen", async () => {
+    const { loadConfig } = await import("../src/core/config.js");
+    const { addAccount } = await import("../src/core/accounts.js");
+    const cfg = loadConfig();
+    addAccount(cfg, "work");
+
+    const { App } = await import("../src/tui/App.js");
+    const { lastFrame, stdin, unmount } = render(
+      React.createElement(App, { onLoginRequested: () => {}, onAddRequested: () => {}, hasTty: true }),
+    );
+    const type = async (text: string): Promise<void> => {
+      for (const ch of text) {
+        stdin.write(ch);
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+
+    expect(lastFrame()).toContain("Threshold");
+    expect(lastFrame()).toContain("95%");
+
+    stdin.write("t");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(lastFrame()).toContain("Auto-swap threshold");
+    expect(lastFrame()).toContain("95");
+
+    await type("\x7f\x7f80\r");
+    expect(loadConfig().proactive_swap_threshold_pct).toBe(80);
+    expect(lastFrame()).toContain("Auto-swap threshold: 80%");
+
+    stdin.write("t");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(lastFrame()).toContain("80");
+    await type("\x7f\x7foff\r");
+    expect(loadConfig().proactive_swap_threshold_pct).toBeNull();
+    expect(lastFrame()).toContain("Auto-swap threshold disabled");
+
+    unmount();
+  });
+
+  it("updates threshold from the latest config while the TUI is open", async () => {
+    await disableFsWatchForApp();
+
+    const { loadConfig } = await import("../src/core/config.js");
+    const { addAccount } = await import("../src/core/accounts.js");
+    const cfg = loadConfig();
+    addAccount(cfg, "work");
+
+    const { App } = await import("../src/tui/App.js");
+    const { stdin, unmount } = render(
+      React.createElement(App, { onLoginRequested: () => {}, onAddRequested: () => {}, hasTty: true }),
+    );
+    const type = async (text: string): Promise<void> => {
+      for (const ch of text) {
+        stdin.write(ch);
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+
+    addAccount(loadConfig(), "side");
+
+    stdin.write("t");
+    await new Promise((r) => setTimeout(r, 20));
+    await type("\x7f\x7f80\r");
+
+    const saved = loadConfig();
+    expect(saved.proactive_swap_threshold_pct).toBe(80);
+    expect(saved.accounts.map((account) => account.name)).toEqual(["work", "side"]);
     unmount();
   });
 
@@ -369,6 +451,129 @@ describe("App TUI", () => {
     expect(state.requested_account).toBe("side");
     expect(state.requested_reason).toBe("manual_session_switch");
     expect(state.requested_at).toBeTruthy();
+    unmount();
+  });
+
+  it("uses the latest live session account when switching after runtime changes", async () => {
+    await disableFsWatchForApp();
+    vi.doMock("../src/core/credentials.js", () => ({
+      deleteAccountCredential: vi.fn(),
+      getAccountCredential: vi.fn((account) => ({
+        service: `svc-${account.name}`,
+        account: "acct",
+        secret: "secret",
+      })),
+      parseStoredCredential: vi.fn(() => ({ subscription_type: "max" })),
+    }));
+
+    const { loadConfig } = await import("../src/core/config.js");
+    const { addAccount } = await import("../src/core/accounts.js");
+    const { loadRuntimeState, runtimeStatePath, saveRuntimeState, updateRuntimeState } = await import("../src/core/runtime.js");
+    const cfg = loadConfig();
+    addAccount(cfg, "work");
+    addAccount(cfg, "side");
+    saveRuntimeState(runtimeStatePath("live-run"), {
+      run_id: "live-run",
+      session_id: "live-run",
+      last_prompt: null,
+      last_prompt_at: null,
+      detector_armed: false,
+      cwd: "/tmp/live",
+      active_account: "work",
+      replay_mode: "continue",
+      custom_prompt: null,
+      started_at: "2026-04-25T00:00:00.000Z",
+      ccswap_pid: process.pid,
+      claude_pid: process.pid,
+      swap_pending: false,
+      swap_reason: null,
+      swap_requested_at: null,
+      requested_account: null,
+      requested_reason: null,
+      requested_at: null,
+      last_activity_at: null,
+      safe_to_restart: false,
+    });
+
+    const { App } = await import("../src/tui/App.js");
+    const { stdin, unmount } = render(
+      React.createElement(App, { onLoginRequested: () => {}, onAddRequested: () => {}, hasTty: true }),
+    );
+    stdin.write("\t");
+    await new Promise((r) => setTimeout(r, 20));
+
+    updateRuntimeState(runtimeStatePath("live-run"), "live-run", {
+      active_account: "side",
+      swap_pending: true,
+      swap_reason: "proactive_usage",
+      swap_requested_at: "2026-04-26T00:00:00.000Z",
+    });
+    stdin.write("s");
+    await new Promise((r) => setTimeout(r, 20));
+
+    const state = loadRuntimeState(runtimeStatePath("live-run"), "live-run");
+    expect(state.requested_account).toBe("work");
+    expect(state.swap_pending).toBe(false);
+    expect(state.swap_reason).toBeNull();
+    expect(state.swap_requested_at).toBeNull();
+    unmount();
+  });
+
+  it("does not recreate a stale runtime file when switching after the session ends", async () => {
+    await disableFsWatchForApp();
+    vi.doMock("../src/core/credentials.js", () => ({
+      deleteAccountCredential: vi.fn(),
+      getAccountCredential: vi.fn((account) => ({
+        service: `svc-${account.name}`,
+        account: "acct",
+        secret: "secret",
+      })),
+      parseStoredCredential: vi.fn(() => ({ subscription_type: "max" })),
+    }));
+
+    const { loadConfig } = await import("../src/core/config.js");
+    const { addAccount } = await import("../src/core/accounts.js");
+    const { runtimeStatePath, saveRuntimeState } = await import("../src/core/runtime.js");
+    const cfg = loadConfig();
+    addAccount(cfg, "work");
+    addAccount(cfg, "side");
+    const statePath = runtimeStatePath("live-run");
+    saveRuntimeState(statePath, {
+      run_id: "live-run",
+      session_id: "live-run",
+      last_prompt: null,
+      last_prompt_at: null,
+      detector_armed: false,
+      cwd: "/tmp/live",
+      active_account: "work",
+      replay_mode: "continue",
+      custom_prompt: null,
+      started_at: "2026-04-25T00:00:00.000Z",
+      ccswap_pid: process.pid,
+      claude_pid: process.pid,
+      swap_pending: false,
+      swap_reason: null,
+      swap_requested_at: null,
+      requested_account: null,
+      requested_reason: null,
+      requested_at: null,
+      last_activity_at: null,
+      safe_to_restart: false,
+    });
+
+    const { App } = await import("../src/tui/App.js");
+    const { lastFrame, stdin, unmount } = render(
+      React.createElement(App, { onLoginRequested: () => {}, onAddRequested: () => {}, hasTty: true }),
+    );
+    stdin.write("\t");
+    await new Promise((r) => setTimeout(r, 20));
+    rmSync(statePath, { force: true });
+
+    stdin.write("s");
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(lastFrame()).toContain("Session ended; refreshed");
+    expect(existsSync(statePath)).toBe(false);
     unmount();
   });
 
